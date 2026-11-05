@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>MAC0623 — A4 Mobile AR Docking</title>
+  <script>
+    document.write('<link rel="stylesheet" href="./style.css?t=' + Date.now() + '">');
+  </script>
+</head>
+<body>
+  <div id="overlay">
+    <div id="hud">
+      <label>Participante <input id="participantId" value="P01" size="4" maxlength="12" /></label>
+      <label>Técnica
+        <select id="techniqueSelect">
+          <option value="touch">1 — Gestos táctiles</option>
+          <option value="carry">2 — Carry (teléfono)</option>
+        </select>
+      </label>
+      <span id="trialCount">Intento 1</span>
+      <button id="finishBtn" type="button">Finalizar intento</button>
+      <button id="replaceBtn" type="button">Reubicar</button>
+      <button id="downloadBtn" type="button">Descargar CSV</button>
+      <button id="startARBtn" type="button">START AR</button>
+      <button id="exitARBtn" type="button" hidden>Salir AR</button>
+    </div>
+
+    <div id="errorCard" aria-live="polite">
+      <div class="card-kicker">Error de encaje</div>
+      <div class="card-title" id="cardTitle">Apunta a una mesa y toca para colocar</div>
+      <div class="card-metrics">
+        <div>
+          <span class="metric-label">Posición</span>
+          <span class="metric-value" id="posError">—</span>
+        </div>
+        <div>
+          <span class="metric-label">Rotación</span>
+          <span class="metric-value" id="yawError">—</span>
+        </div>
+      </div>
+      <div class="card-status" id="cardStatus">Esperando superficie…</div>
+    </div>
+
+    <div id="carryBar" hidden>
+      <button id="rotLeftBtn" type="button" aria-label="Rotar izquierda">↺</button>
+      <button id="carryBtn" type="button">Mantén para llevar</button>
+      <button id="rotRightBtn" type="button" aria-label="Rotar derecha">↻</button>
+    </div>
+
+    <div id="help">
+      Toca el retículo para colocar el fantasma y las tres piezas.
+      <b>Selecciona</b> tocando una pieza (raycast).
+      <b>Gestos:</b> un dedo arrastra sobre la mesa, dos dedos rotan.
+      <b>Carry:</b> mantén el botón y mueve el teléfono; ↺ ↻ rotan.
+      Encaja la pieza del mismo color/forma (2 cm, 10°).
+      <b>Finalizar intento</b> guarda la fila CSV.
+    </div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module">
+    import("./main.js?t=" + Date.now());
+  </script>
+</body>
+</html>
