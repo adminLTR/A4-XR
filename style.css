@@ -3,10 +3,20 @@ html, body {
   height: 100%;
   overflow: hidden;
   font-family: system-ui, -apple-system, sans-serif;
-  background: #9eb4c4;
+  background: #12141a;
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;
+}
+
+#hud,
+#arGate,
+#carryBar,
+#ARButton,
+button,
+input,
+select {
+  touch-action: manipulation;
 }
 
 canvas {
@@ -79,9 +89,6 @@ canvas {
 #downloadBtn { background: #457; }
 #downloadBtn:hover { background: #568; }
 
-#startARBtn { background: #c60; }
-#startARBtn:hover { background: #e80; }
-
 #exitARBtn { background: #a33; }
 #exitARBtn:hover { background: #c44; }
 
@@ -96,6 +103,79 @@ canvas {
   padding: 4px 8px;
   border-radius: 4px;
   background: #333;
+}
+
+#arGate {
+  pointer-events: auto;
+  width: min(400px, calc(100vw - 20px));
+  margin: 10px;
+  padding: 14px 16px 16px;
+  border-radius: 12px;
+  background: rgba(16, 18, 24, 0.94);
+  color: #f2f4f8;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  text-align: left;
+}
+
+#arGate[hidden],
+#errorCard[hidden] {
+  display: none;
+}
+
+#arGateBody {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #c5ccd8;
+}
+
+#enterARBtn {
+  display: block;
+  width: 100%;
+  min-height: 52px;
+  margin-bottom: 10px;
+  border: none;
+  border-radius: 10px;
+  background: #e86a00;
+  color: #fff;
+  font-size: 18px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+#enterARBtn:disabled {
+  background: #555;
+  cursor: default;
+}
+
+#arDiag {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #11151c;
+  color: #9fbd7a;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+#arDiag.fail {
+  color: #f0a0a0;
+}
+
+#ARButton {
+  font-family: system-ui, -apple-system, sans-serif !important;
+  z-index: 10000 !important;
+  opacity: 1 !important;
+  bottom: 24px !important;
+  left: 50% !important;
+  width: 200px !important;
+  margin-left: -100px !important;
+  padding: 14px 10px !important;
+  font-size: 16px !important;
+  font-weight: 700 !important;
+  background: rgba(232, 106, 0, 0.95) !important;
 }
 
 #errorCard {
@@ -213,6 +293,10 @@ canvas {
   font-size: 11px;
   line-height: 1.4;
   max-width: 720px;
+}
+
+#overlay:not(.presenting) #help {
+  display: none;
 }
 
 @media (max-height: 560px) {

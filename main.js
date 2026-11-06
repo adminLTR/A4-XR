@@ -10,6 +10,7 @@
 // when the user taps Finalizar intento.
 
 import * as THREE from "three";
+import { ARButton } from "three/addons/webxr/ARButton.js";
 
 const SIZE = 0.10;
 const POS_TOLERANCE_M = 0.02;
@@ -42,8 +43,12 @@ const trialCountEl = document.getElementById("trialCount");
 const finishBtn = document.getElementById("finishBtn");
 const replaceBtn = document.getElementById("replaceBtn");
 const downloadBtn = document.getElementById("downloadBtn");
-const startARBtn = document.getElementById("startARBtn");
 const exitARBtn = document.getElementById("exitARBtn");
+const arGate = document.getElementById("arGate");
+const arGateTitle = document.getElementById("arGateTitle");
+const arGateBody = document.getElementById("arGateBody");
+const enterARBtn = document.getElementById("enterARBtn");
+const arDiag = document.getElementById("arDiag");
 const errorCard = document.getElementById("errorCard");
 const cardTitle = document.getElementById("cardTitle");
 const posErrorEl = document.getElementById("posError");
@@ -70,7 +75,9 @@ const _reticleQuat = new THREE.Quaternion();
 const _reticleScale = new THREE.Vector3();
 
 let scene, camera, renderer;
-let reticle, workspace, ghost, debugFloor;
+let reticle, workspace, ghost, desktopHelpers;
+let arSupported = false;
+let lastArMessage = "";
 let objects = [];
 let selected = null;
 
@@ -426,7 +433,7 @@ function twistAngle() {
 }
 
 function isHudEvent(event) {
-  return Boolean(event.target.closest("#hud, #carryBar, button, input, select, label, a"));
+  return Boolean(event.target.closest("#hud, #carryBar, #arGate, #ARButton, button, input, select, label, a"));
 }
 
 function onPointerDown(event) {
@@ -436,11 +443,11 @@ function onPointerDown(event) {
   if (trialActive) touchCount += 1;
 
   if (!workspacePlaced) {
-    if (renderer.xr.isPresenting) {
+    if (isPresenting()) {
       if (reticle.visible) placeWorkspaceFromReticle();
-    } else {
+    } else if (!isPhone() && desktopHelpers) {
       _raycaster.setFromCamera(pointerToNDC(event), camera);
-      const hits = _raycaster.intersectObject(debugFloor);
+      const hits = _raycaster.intersectObject(desktopHelpers, true);
       if (hits.length) placeWorkspaceDesktop(hits[0].point);
     }
     return;
@@ -516,7 +523,25 @@ function applyDockedLook(on) {
   }
 }
 
+function isPresenting() {
+  return Boolean(renderer && renderer.xr && renderer.xr.isPresenting);
+}
+
+function isPhone() {
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+
+function isIOS() {
+  return /iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+
 function updateHud() {
+  const presenting = isPresenting();
+  arGate.hidden = presenting;
+  errorCard.hidden = !presenting;
+  overlay.classList.toggle("placed", workspacePlaced);
+  overlay.classList.toggle("presenting", presenting);
+
   const info = ghost ? shapeInfo(ghost.userData.type) : null;
   const errors = measureErrors();
   const match = matchingObject();
@@ -526,13 +551,19 @@ function updateHud() {
   errorCard.classList.toggle("wrong-selected", Boolean(wrong));
   applyDockedLook(Boolean(errors.docked));
 
+  if (!presenting) {
+    trialCountEl.textContent = `Intento ${trialIndexByTechnique[technique] + 1}`;
+    carryBar.hidden = true;
+    return;
+  }
+
   if (!workspacePlaced) {
     cardTitle.textContent = "Apunta a una mesa y toca para colocar";
     posErrorEl.textContent = "—";
     yawErrorEl.textContent = "—";
-    cardStatus.textContent = renderer.xr.isPresenting
-      ? (reticle.visible ? "Superficie detectada — toca para colocar" : "Buscando superficie…")
-      : "Modo escritorio: toca el suelo para colocar";
+    cardStatus.textContent = reticle.visible
+      ? "Superficie detectada — toca para colocar"
+      : "Buscando superficie…";
   } else {
     cardTitle.textContent = info ? `Fantasma: ${info.name}` : "Fantasma";
     posErrorEl.textContent = errors.posCm == null ? "—" : `${errors.posCm.toFixed(1)} cm`;
@@ -552,7 +583,6 @@ function updateHud() {
 
   trialCountEl.textContent = `Intento ${trialIndexByTechnique[technique] + 1}`;
   carryBar.hidden = technique !== "carry";
-  overlay.classList.toggle("placed", workspacePlaced);
 }
 
 function finishTrial() {
@@ -608,26 +638,91 @@ function setTechnique(next) {
   else updateHud();
 }
 
-async function startAR() {
-  if (!navigator.xr) {
-    cardStatus.textContent = "WebXR no está disponible en este navegador";
-    return;
+function sessionInit() {
+  return {
+    requiredFeatures: ["hit-test"],
+    optionalFeatures: ["dom-overlay"],
+    domOverlay: { root: overlay },
+  };
+}
+
+function setGateMessage(title, body, fail = false) {
+  arGateTitle.textContent = title;
+  arGateBody.innerHTML = body;
+  lastArMessage = title;
+  if (fail) arDiag.classList.add("fail");
+  else arDiag.classList.remove("fail");
+}
+
+async function diagnoseAR() {
+  const lines = [];
+  const ua = navigator.userAgent;
+  const secure = window.isSecureContext;
+  const hasXr = "xr" in navigator;
+  let immersive = false;
+
+  lines.push(`HTTPS / contexto seguro: ${secure ? "sí" : "NO"}`);
+  lines.push(`navigator.xr: ${hasXr ? "sí" : "NO"}`);
+  lines.push(`Navegador: ${ua}`);
+
+  if (!secure) {
+    setGateMessage(
+      "Esta página no está en HTTPS",
+      "WebXR solo funciona en HTTPS. Abre la URL de GitHub Pages (https://…), no un IP http:// ni un archivo local."
+    );
+  } else if (isIOS()) {
+    setGateMessage(
+      "iPhone no soporta este WebXR AR",
+      "La tarea pide un <b>Android con Chrome</b> y ARCore (Google Play Services for AR). Safari y Chrome en iOS no abren <code>immersive-ar</code>.",
+      true
+    );
+  } else if (!hasXr) {
+    setGateMessage(
+      "Este navegador no tiene WebXR",
+      "En Android abre la página con <b>Chrome</b> (no Samsung Internet, no el navegador de Instagram/WhatsApp). Instala también <b>Google Play Services for AR</b>.",
+      true
+    );
+  } else {
+    immersive = await navigator.xr.isSessionSupported("immersive-ar").catch(() => false);
+    lines.push(`immersive-ar: ${immersive ? "sí" : "NO"}`);
+    if (immersive) {
+      arSupported = true;
+      setGateMessage(
+        "Listo para usar la cámara",
+        "Pulsa <b>Entrar en AR</b> o el botón naranja <b>START AR</b> abajo. Luego apunta a una mesa hasta que aparezca el retículo y toca para colocar."
+      );
+    } else {
+      setGateMessage(
+        "Este teléfono no activa immersive-ar",
+        "Usa <b>Chrome para Android</b> e instala <b>Google Play Services for AR</b> (ARCore). Si Chrome está en modo “sitio de escritorio”, desactívalo.",
+        true
+      );
+    }
   }
-  const supported = await navigator.xr.isSessionSupported("immersive-ar").catch(() => false);
-  if (!supported) {
-    cardStatus.textContent = "Este dispositivo no soporta immersive-ar + hit-test";
+
+  enterARBtn.disabled = !arSupported;
+  arDiag.textContent = lines.join("\n");
+  return immersive;
+}
+
+async function startAR() {
+  if (isPresenting()) return;
+  if (!arSupported) {
+    await diagnoseAR();
     return;
   }
   try {
-    const session = await navigator.xr.requestSession("immersive-ar", {
-      requiredFeatures: ["hit-test"],
-      optionalFeatures: ["dom-overlay"],
-      domOverlay: { root: overlay },
-    });
     renderer.xr.setReferenceSpaceType("local");
+    const session = await navigator.xr.requestSession("immersive-ar", sessionInit());
     await renderer.xr.setSession(session);
   } catch (err) {
-    cardStatus.textContent = `No se pudo iniciar AR: ${err.message}`;
+    setGateMessage(
+      "No se pudo iniciar AR",
+      `El navegador rechazó la sesión: <b>${err.message}</b>. Prueba Chrome estable, con ARCore instalado, y toca el botón desde la página (no desde un iframe).`,
+      true
+    );
+    arDiag.textContent = `${arDiag.textContent}\nerror: ${err.message}`;
+    arDiag.classList.add("fail");
   }
 }
 
@@ -637,12 +732,11 @@ function endAR() {
 }
 
 function onSessionStart() {
-  debugFloor.visible = false;
+  if (desktopHelpers) desktopHelpers.visible = false;
   scene.background = null;
-  startARBtn.hidden = true;
   exitARBtn.hidden = false;
-  relocate();
   overlay.style.display = "";
+  relocate();
 }
 
 function pickFromRay(origin, direction) {
@@ -678,15 +772,19 @@ function setupControllers() {
   }
 }
 
+function restoreOverlay() {
+  overlay.style.display = "";
+}
+
 function onSessionEnd() {
-  debugFloor.visible = true;
-  scene.background = new THREE.Color(0x9eb4c4);
-  startARBtn.hidden = false;
+  if (desktopHelpers) desktopHelpers.visible = !isPhone();
+  scene.background = isPhone() ? null : new THREE.Color(0x9eb4c4);
   exitARBtn.hidden = true;
   hitTestSource = null;
   hitTestSourceRequested = false;
-  overlay.style.display = "";
-  camera.position.set(0.15, 0.95, 0.95);
+  restoreOverlay();
+  window.setTimeout(restoreOverlay, 0);
+  camera.position.set(0.05, 0.85, 0.95);
   camera.lookAt(0, 0, 0);
   updateHud();
 }
@@ -747,7 +845,7 @@ function animate(_timestamp, frame) {
 
 function main() {
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x9eb4c4);
+  scene.background = isPhone() ? null : new THREE.Color(0x9eb4c4);
 
   camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 30);
   camera.position.set(0.05, 0.85, 0.95);
@@ -758,21 +856,27 @@ function main() {
   dir.position.set(0.5, 1.6, 0.7);
   scene.add(dir);
 
-  debugFloor = new THREE.Mesh(
+  desktopHelpers = new THREE.Group();
+  const debugFloor = new THREE.Mesh(
     new THREE.PlaneGeometry(4, 4),
     new THREE.MeshStandardMaterial({ color: 0x8b93a1, roughness: 0.92 })
   );
   debugFloor.rotation.x = -Math.PI / 2;
-  scene.add(debugFloor);
+  desktopHelpers.add(debugFloor);
   const grid = new THREE.GridHelper(4, 20, 0x445566, 0x6a7382);
   grid.position.y = 0.002;
-  scene.add(grid);
+  desktopHelpers.add(grid);
+  desktopHelpers.visible = !isPhone();
+  scene.add(desktopHelpers);
 
   renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setClearColor(0x000000, isPhone() ? 0 : 1);
   renderer.xr.enabled = true;
   document.body.appendChild(renderer.domElement);
+
+  document.body.appendChild(ARButton.createButton(renderer, sessionInit()));
 
   buildReticle();
   buildWorkspace();
@@ -791,7 +895,7 @@ function main() {
   finishBtn.addEventListener("click", finishTrial);
   replaceBtn.addEventListener("click", relocate);
   downloadBtn.addEventListener("click", downloadCsv);
-  startARBtn.addEventListener("click", startAR);
+  enterARBtn.addEventListener("click", startAR);
   exitARBtn.addEventListener("click", endAR);
   techniqueSelect.addEventListener("change", () => setTechnique(techniqueSelect.value));
   participantIdInput.addEventListener("change", () => {
@@ -841,11 +945,8 @@ function main() {
     if (event.key === "e" || event.key === "E") selected.rotation.y -= CARRY_ROT_STEP;
   });
 
-  if (!window.isSecureContext) {
-    cardStatus.textContent = "WebXR necesita HTTPS. En el teléfono abre la URL de GitHub Pages.";
-  }
-
   updateHud();
+  diagnoseAR();
   renderer.setAnimationLoop(animate);
 }
 

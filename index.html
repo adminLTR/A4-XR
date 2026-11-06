@@ -22,11 +22,21 @@
       <button id="finishBtn" type="button">Finalizar intento</button>
       <button id="replaceBtn" type="button">Reubicar</button>
       <button id="downloadBtn" type="button">Descargar CSV</button>
-      <button id="startARBtn" type="button">START AR</button>
       <button id="exitARBtn" type="button" hidden>Salir AR</button>
     </div>
 
-    <div id="errorCard" aria-live="polite">
+    <div id="arGate">
+      <div class="card-kicker">Cámara AR</div>
+      <div class="card-title" id="arGateTitle">La cámara aún no está activa</div>
+      <p id="arGateBody">
+        Lo que ves ahora es el modo 3D de escritorio, no realidad aumentada.
+        En un Android con Chrome pulsa el botón naranja <b>START AR</b>.
+      </p>
+      <button id="enterARBtn" type="button">Entrar en AR</button>
+      <pre id="arDiag">Comprobando WebXR…</pre>
+    </div>
+
+    <div id="errorCard" hidden aria-live="polite">
       <div class="card-kicker">Error de encaje</div>
       <div class="card-title" id="cardTitle">Apunta a una mesa y toca para colocar</div>
       <div class="card-metrics">
