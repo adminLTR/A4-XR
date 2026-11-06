@@ -48,7 +48,6 @@ const arGate = document.getElementById("arGate");
 const arGateTitle = document.getElementById("arGateTitle");
 const arGateBody = document.getElementById("arGateBody");
 const enterARBtn = document.getElementById("enterARBtn");
-const arDiag = document.getElementById("arDiag");
 const errorCard = document.getElementById("errorCard");
 const cardTitle = document.getElementById("cardTitle");
 const posErrorEl = document.getElementById("posError");
@@ -77,7 +76,6 @@ const _reticleScale = new THREE.Vector3();
 let scene, camera, renderer;
 let reticle, workspace, ghost, desktopHelpers;
 let arSupported = false;
-let lastArMessage = "";
 let objects = [];
 let selected = null;
 
@@ -646,45 +644,33 @@ function sessionInit() {
   };
 }
 
-function setGateMessage(title, body, fail = false) {
+function setGateMessage(title, body) {
   arGateTitle.textContent = title;
   arGateBody.innerHTML = body;
-  lastArMessage = title;
-  if (fail) arDiag.classList.add("fail");
-  else arDiag.classList.remove("fail");
 }
 
 async function diagnoseAR() {
-  const lines = [];
-  const ua = navigator.userAgent;
   const secure = window.isSecureContext;
   const hasXr = "xr" in navigator;
   let immersive = false;
 
-  lines.push(`HTTPS / contexto seguro: ${secure ? "sí" : "NO"}`);
-  lines.push(`navigator.xr: ${hasXr ? "sí" : "NO"}`);
-  lines.push(`Navegador: ${ua}`);
-
   if (!secure) {
     setGateMessage(
       "Esta página no está en HTTPS",
-      "WebXR solo funciona en HTTPS. Abre la URL de GitHub Pages (https://…), no un IP http:// ni un archivo local."
+      "WebXR solo funciona en HTTPS. Abre la URL de GitHub Pages (https://…)."
     );
   } else if (isIOS()) {
     setGateMessage(
       "iPhone no soporta este WebXR AR",
-      "La tarea pide un <b>Android con Chrome</b> y ARCore (Google Play Services for AR). Safari y Chrome en iOS no abren <code>immersive-ar</code>.",
-      true
+      "La tarea pide un <b>Android con Chrome</b> y ARCore."
     );
   } else if (!hasXr) {
     setGateMessage(
       "Este navegador no tiene WebXR",
-      "En Android abre la página con <b>Chrome</b> (no Samsung Internet, no el navegador de Instagram/WhatsApp). Instala también <b>Google Play Services for AR</b>.",
-      true
+      "Abre la página con <b>Chrome</b> e instala <b>Google Play Services for AR</b>."
     );
   } else {
     immersive = await navigator.xr.isSessionSupported("immersive-ar").catch(() => false);
-    lines.push(`immersive-ar: ${immersive ? "sí" : "NO"}`);
     if (immersive) {
       arSupported = true;
       setGateMessage(
@@ -693,15 +679,13 @@ async function diagnoseAR() {
       );
     } else {
       setGateMessage(
-        "Este teléfono no activa immersive-ar",
-        "Usa <b>Chrome para Android</b> e instala <b>Google Play Services for AR</b> (ARCore). Si Chrome está en modo “sitio de escritorio”, desactívalo.",
-        true
+        "Este dispositivo no activa immersive-ar",
+        "Usa <b>Chrome para Android</b> e instala <b>Google Play Services for AR</b>."
       );
     }
   }
 
   enterARBtn.disabled = !arSupported;
-  arDiag.textContent = lines.join("\n");
   return immersive;
 }
 
@@ -718,11 +702,8 @@ async function startAR() {
   } catch (err) {
     setGateMessage(
       "No se pudo iniciar AR",
-      `El navegador rechazó la sesión: <b>${err.message}</b>. Prueba Chrome estable, con ARCore instalado, y toca el botón desde la página (no desde un iframe).`,
-      true
+      `El navegador rechazó la sesión: <b>${err.message}</b>.`
     );
-    arDiag.textContent = `${arDiag.textContent}\nerror: ${err.message}`;
-    arDiag.classList.add("fail");
   }
 }
 

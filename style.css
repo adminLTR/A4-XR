@@ -149,21 +149,6 @@ canvas {
   cursor: default;
 }
 
-#arDiag {
-  margin: 0;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: #11151c;
-  color: #9fbd7a;
-  font-size: 11px;
-  line-height: 1.45;
-  white-space: pre-wrap;
-}
-
-#arDiag.fail {
-  color: #f0a0a0;
-}
-
 #ARButton {
   font-family: system-ui, -apple-system, sans-serif !important;
   z-index: 10000 !important;
