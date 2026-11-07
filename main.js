@@ -1,6 +1,6 @@
 // MAC0623 — A4 Mobile AR Docking
 //
-// Base: three.js webxr_ar_hittest (reticle + viewer hit-test + tap-to-place).
+// Hit-test: immersive-web sample (viewer space + local pose, no fallback ray).
 // Task: place a workspace on a real table, pick the matching piece, dock it
 // onto a translucent ghost (x, z, yaw). Two techniques:
 //   1. touch  — one-finger drag on the plane, two-finger twist
@@ -82,7 +82,6 @@ let objects = [];
 let selected = null;
 
 let hitTestSource = null;
-let hitTestSourceRequested = false;
 let hadHit = false;
 
 let technique = "touch";
@@ -355,6 +354,10 @@ function relocate() {
   workspace.visible = false;
   workspacePlaced = false;
   trialActive = false;
+  if (reticle) {
+    reticle.visible = false;
+    reticle.userData.estimated = true;
+  }
   clearSelection();
   carrying = false;
   dragging = false;
@@ -437,29 +440,16 @@ function isHudEvent(event) {
   return Boolean(event.target.closest("#hud, #carryBar, #arGate, #ARButton, #errorCard, button, input, select, label, a"));
 }
 
-function applyFallbackReticle() {
-  camera.updateMatrixWorld(true);
-  camera.getWorldPosition(_camPos);
-  camera.getWorldDirection(_forward);
-  const tableY = _camPos.y - 0.4;
-  const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -tableY);
-  _raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
-  if (!_raycaster.ray.intersectPlane(plane, _hit)) {
-    _hit.copy(_camPos).addScaledVector(_forward, 0.55);
-    _hit.y = tableY;
-  }
-  _reticleQuat.identity();
-  _reticleScale.set(1, 1, 1);
-  reticle.matrix.compose(_hit, _reticleQuat, _reticleScale);
-  reticle.visible = true;
-  reticle.userData.estimated = true;
-  reticle.material.color.setHex(0xffcc33);
-  if (reticle.children[0]) reticle.children[0].material.color.setHex(0xffcc33);
+function hasRealHit() {
+  return Boolean(reticle && reticle.visible && !reticle.userData.estimated);
 }
 
 function tryPlaceWorkspace() {
   if (workspacePlaced || !isPresenting()) return;
-  if (!reticle.visible) applyFallbackReticle();
+  if (!hasRealHit()) {
+    cardStatus.textContent = "Aún no hay superficie. Mueve el teléfono hasta que aparezca el anillo verde.";
+    return;
+  }
   placeWorkspaceFromReticle();
 }
 
@@ -586,17 +576,23 @@ function updateHud() {
     return;
   }
 
-  if (aimEl) aimEl.hidden = workspacePlaced;
-  if (placeBtn) placeBtn.hidden = workspacePlaced;
+  const tracked = hasRealHit();
+  if (aimEl) {
+    aimEl.hidden = workspacePlaced || !tracked;
+    aimEl.classList.toggle("tracked", tracked);
+  }
+  if (placeBtn) {
+    placeBtn.hidden = workspacePlaced;
+    placeBtn.disabled = !workspacePlaced && !tracked;
+  }
 
   if (!workspacePlaced) {
-    const tracked = reticle.visible && !reticle.userData.estimated;
-    cardTitle.textContent = tracked ? "Superficie detectada" : "Apunta a una mesa";
+    cardTitle.textContent = tracked ? "Superficie detectada" : "Buscando superficie";
     posErrorEl.textContent = "—";
     yawErrorEl.textContent = "—";
     cardStatus.textContent = tracked
       ? "Toca la pantalla o pulsa Colocar piezas aquí"
-      : "Inclina el teléfono hacia la mesa (luz + textura, no un tablero blanco). Muévelo en círculos lentos. Si no aparece el anillo verde, pulsa Colocar igual: las piezas salen frente a ti.";
+      : "El anillo solo aparece cuando hay un plano real. Inclina el teléfono hacia la mesa y muévelo despacio (luz y textura).";
   } else {
     cardTitle.textContent = info ? `Fantasma: ${info.name}` : "Fantasma";
     posErrorEl.textContent = errors.posCm == null ? "—" : `${errors.posCm.toFixed(1)} cm`;
@@ -616,7 +612,6 @@ function updateHud() {
 
   trialCountEl.textContent = `Intento ${trialIndexByTechnique[technique] + 1}`;
   carryBar.hidden = technique !== "carry";
-  if (placeBtn && workspacePlaced) placeBtn.hidden = true;
 }
 
 function finishTrial() {
@@ -674,7 +669,7 @@ function setTechnique(next) {
 
 function sessionInit() {
   return {
-    requiredFeatures: ["hit-test"],
+    requiredFeatures: ["local", "hit-test"],
     optionalFeatures: ["dom-overlay"],
     domOverlay: { root: overlay },
   };
@@ -753,6 +748,7 @@ function onSessionStart() {
   scene.background = null;
   exitARBtn.hidden = false;
   overlay.style.display = "";
+  bindHitTestSource();
   relocate();
 }
 
@@ -797,8 +793,7 @@ function onSessionEnd() {
   if (desktopHelpers) desktopHelpers.visible = !isPhone();
   scene.background = isPhone() ? null : new THREE.Color(0x9eb4c4);
   exitARBtn.hidden = true;
-  hitTestSource = null;
-  hitTestSourceRequested = false;
+  clearHitTestSource();
   restoreOverlay();
   window.setTimeout(restoreOverlay, 0);
   camera.position.set(0.05, 0.85, 0.95);
@@ -806,64 +801,85 @@ function onSessionEnd() {
   updateHud();
 }
 
-function requestHitTest(session) {
-  if (hitTestSourceRequested) return;
-  hitTestSourceRequested = true;
+function clearHitTestSource() {
+  if (hitTestSource) {
+    try {
+      hitTestSource.cancel();
+    } catch (_err) {
+      // Some browsers cancel the source when the session ends.
+    }
+    hitTestSource = null;
+  }
+}
+
+function bindHitTestSource() {
+  const session = renderer.xr.getSession();
+  if (!session) return;
+  clearHitTestSource();
   session.requestReferenceSpace("viewer").then((viewerSpace) => {
-    const options = { space: viewerSpace };
-    if (typeof XRRay === "function") options.offsetRay = new XRRay();
-    return session.requestHitTestSource(options);
+    if (renderer.xr.getSession() !== session) return null;
+    return session.requestHitTestSource({ space: viewerSpace });
   }).then((source) => {
+    if (!source) return;
+    if (renderer.xr.getSession() !== session) {
+      source.cancel();
+      return;
+    }
     hitTestSource = source;
   }).catch((err) => {
     console.warn("hit-test source failed", err);
-    window.setTimeout(() => {
-      hitTestSourceRequested = false;
-    }, 600);
-  });
-  session.addEventListener("end", () => {
-    hitTestSourceRequested = false;
-    hitTestSource = null;
   });
 }
 
 function updateHitTest(frame) {
   const referenceSpace = renderer.xr.getReferenceSpace();
-  const session = renderer.xr.getSession();
-  if (!session || !referenceSpace) return;
+  if (!referenceSpace) {
+    if (!workspacePlaced) reticle.visible = false;
+    return;
+  }
 
-  requestHitTest(session);
-
-  const pose = frame.getViewerPose(referenceSpace);
-  if (!pose) {
+  const viewerPose = frame.getViewerPose(referenceSpace);
+  if (!viewerPose) {
     if (hadPose && trialActive) trackingLost += 1;
     hadPose = false;
-    if (!workspacePlaced) applyFallbackReticle();
+    if (!workspacePlaced) reticle.visible = false;
     return;
   }
   hadPose = true;
 
-  let found = false;
-  if (hitTestSource) {
-    const results = frame.getHitTestResults(hitTestSource);
-    found = results.length > 0;
-    if (hadHit && !found && trialActive) trackingLost += 1;
-    hadHit = found;
-
-    if (!workspacePlaced && found) {
-      const hitPose = results[0].getPose(referenceSpace);
-      if (hitPose) {
-        reticle.visible = true;
-        reticle.userData.estimated = false;
-        reticle.matrix.fromArray(hitPose.transform.matrix);
-        reticle.material.color.setHex(0x7cff9a);
-        if (reticle.children[0]) reticle.children[0].material.color.setHex(0x7cff9a);
-        return;
-      }
-    }
+  if (!hitTestSource) {
+    if (!workspacePlaced) reticle.visible = false;
+    return;
   }
 
-  if (!workspacePlaced) applyFallbackReticle();
+  const results = frame.getHitTestResults(hitTestSource);
+  const found = results.length > 0;
+  if (hadHit && !found && trialActive) trackingLost += 1;
+  hadHit = found;
+
+  if (workspacePlaced) {
+    reticle.visible = false;
+    return;
+  }
+
+  if (!found) {
+    reticle.visible = false;
+    reticle.userData.estimated = true;
+    return;
+  }
+
+  const hitPose = results[0].getPose(referenceSpace);
+  if (!hitPose) {
+    reticle.visible = false;
+    reticle.userData.estimated = true;
+    return;
+  }
+
+  reticle.visible = true;
+  reticle.userData.estimated = false;
+  reticle.matrix.fromArray(hitPose.transform.matrix);
+  reticle.material.color.setHex(0x7cff9a);
+  if (reticle.children[0]) reticle.children[0].material.color.setHex(0x7cff9a);
 }
 
 function animate(_timestamp, frame) {
@@ -904,6 +920,7 @@ function main() {
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setClearColor(0x000000, isPhone() ? 0 : 1);
   renderer.xr.enabled = true;
+  renderer.xr.setReferenceSpaceType("local");
   document.body.appendChild(renderer.domElement);
 
   document.body.appendChild(ARButton.createButton(renderer, sessionInit()));

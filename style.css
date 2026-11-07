@@ -47,11 +47,15 @@ canvas {
   width: 26px;
   height: 26px;
   margin: -13px 0 0 -13px;
-  border: 2px solid #7cff9a;
+  border: 2px solid #ffcc33;
   border-radius: 50%;
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
   pointer-events: none;
   z-index: 1;
+}
+
+#aim.tracked {
+  border-color: #7cff9a;
 }
 
 #aim[hidden] { display: none; }
@@ -266,6 +270,11 @@ canvas {
   font-size: 15px;
   font-weight: 700;
   cursor: pointer;
+}
+
+#placeBtn:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 #placeBtn[hidden] { display: none; }
