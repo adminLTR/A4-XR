@@ -10,6 +10,8 @@
 </head>
 <body>
   <div id="overlay">
+    <div id="touchLayer"></div>
+    <div id="aim" hidden></div>
     <div id="hud">
       <label>Participante <input id="participantId" value="P01" size="4" maxlength="12" /></label>
       <label>Técnica
@@ -48,7 +50,8 @@
           <span class="metric-value" id="yawError">—</span>
         </div>
       </div>
-      <div class="card-status" id="cardStatus">Esperando superficie…</div>
+      <div class="card-status" id="cardStatus">Inclina el teléfono hacia la mesa y muévelo despacio.</div>
+      <button id="placeBtn" type="button">Colocar piezas aquí</button>
     </div>
 
     <div id="carryBar" hidden>

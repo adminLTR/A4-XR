@@ -49,6 +49,8 @@ const arGateTitle = document.getElementById("arGateTitle");
 const arGateBody = document.getElementById("arGateBody");
 const enterARBtn = document.getElementById("enterARBtn");
 const errorCard = document.getElementById("errorCard");
+const placeBtn = document.getElementById("placeBtn");
+const aimEl = document.getElementById("aim");
 const cardTitle = document.getElementById("cardTitle");
 const posErrorEl = document.getElementById("posError");
 const yawErrorEl = document.getElementById("yawError");
@@ -259,16 +261,17 @@ function buildWorkspace() {
 
 function buildReticle() {
   reticle = new THREE.Mesh(
-    new THREE.RingGeometry(0.06, 0.08, 32).rotateX(-Math.PI / 2),
-    new THREE.MeshBasicMaterial({ color: 0x7CFF9A })
+    new THREE.RingGeometry(0.10, 0.14, 32).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({ color: 0x7cff9a, transparent: true, opacity: 0.95 })
   );
   reticle.matrixAutoUpdate = false;
   reticle.visible = false;
+  reticle.userData.estimated = true;
   scene.add(reticle);
 
   const inner = new THREE.Mesh(
-    new THREE.CircleGeometry(0.008, 16).rotateX(-Math.PI / 2),
-    new THREE.MeshBasicMaterial({ color: 0x7CFF9A })
+    new THREE.CircleGeometry(0.012, 16).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({ color: 0x7cff9a })
   );
   reticle.add(inner);
 }
@@ -431,7 +434,33 @@ function twistAngle() {
 }
 
 function isHudEvent(event) {
-  return Boolean(event.target.closest("#hud, #carryBar, #arGate, #ARButton, button, input, select, label, a"));
+  return Boolean(event.target.closest("#hud, #carryBar, #arGate, #ARButton, #errorCard, button, input, select, label, a"));
+}
+
+function applyFallbackReticle() {
+  camera.updateMatrixWorld(true);
+  camera.getWorldPosition(_camPos);
+  camera.getWorldDirection(_forward);
+  const tableY = _camPos.y - 0.4;
+  const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -tableY);
+  _raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+  if (!_raycaster.ray.intersectPlane(plane, _hit)) {
+    _hit.copy(_camPos).addScaledVector(_forward, 0.55);
+    _hit.y = tableY;
+  }
+  _reticleQuat.identity();
+  _reticleScale.set(1, 1, 1);
+  reticle.matrix.compose(_hit, _reticleQuat, _reticleScale);
+  reticle.visible = true;
+  reticle.userData.estimated = true;
+  reticle.material.color.setHex(0xffcc33);
+  if (reticle.children[0]) reticle.children[0].material.color.setHex(0xffcc33);
+}
+
+function tryPlaceWorkspace() {
+  if (workspacePlaced || !isPresenting()) return;
+  if (!reticle.visible) applyFallbackReticle();
+  placeWorkspaceFromReticle();
 }
 
 function onPointerDown(event) {
@@ -442,7 +471,7 @@ function onPointerDown(event) {
 
   if (!workspacePlaced) {
     if (isPresenting()) {
-      if (reticle.visible) placeWorkspaceFromReticle();
+      tryPlaceWorkspace();
     } else if (!isPhone() && desktopHelpers) {
       _raycaster.setFromCamera(pointerToNDC(event), camera);
       const hits = _raycaster.intersectObject(desktopHelpers, true);
@@ -552,16 +581,22 @@ function updateHud() {
   if (!presenting) {
     trialCountEl.textContent = `Intento ${trialIndexByTechnique[technique] + 1}`;
     carryBar.hidden = true;
+    if (aimEl) aimEl.hidden = true;
+    if (placeBtn) placeBtn.hidden = true;
     return;
   }
 
+  if (aimEl) aimEl.hidden = workspacePlaced;
+  if (placeBtn) placeBtn.hidden = workspacePlaced;
+
   if (!workspacePlaced) {
-    cardTitle.textContent = "Apunta a una mesa y toca para colocar";
+    const tracked = reticle.visible && !reticle.userData.estimated;
+    cardTitle.textContent = tracked ? "Superficie detectada" : "Apunta a una mesa";
     posErrorEl.textContent = "—";
     yawErrorEl.textContent = "—";
-    cardStatus.textContent = reticle.visible
-      ? "Superficie detectada — toca para colocar"
-      : "Buscando superficie…";
+    cardStatus.textContent = tracked
+      ? "Toca la pantalla o pulsa Colocar piezas aquí"
+      : "Inclina el teléfono hacia la mesa (luz + textura, no un tablero blanco). Muévelo en círculos lentos. Si no aparece el anillo verde, pulsa Colocar igual: las piezas salen frente a ti.";
   } else {
     cardTitle.textContent = info ? `Fantasma: ${info.name}` : "Fantasma";
     posErrorEl.textContent = errors.posCm == null ? "—" : `${errors.posCm.toFixed(1)} cm`;
@@ -581,6 +616,7 @@ function updateHud() {
 
   trialCountEl.textContent = `Intento ${trialIndexByTechnique[technique] + 1}`;
   carryBar.hidden = technique !== "carry";
+  if (placeBtn && workspacePlaced) placeBtn.hidden = true;
 }
 
 function finishTrial() {
@@ -734,7 +770,7 @@ function pickFromRay(origin, direction) {
 function onControllerSelect(event) {
   if (performance.now() - lastPointerAt < 400) return;
   if (!workspacePlaced) {
-    if (reticle.visible) placeWorkspaceFromReticle();
+    tryPlaceWorkspace();
     return;
   }
   const controller = event.target;
@@ -774,9 +810,16 @@ function requestHitTest(session) {
   if (hitTestSourceRequested) return;
   hitTestSourceRequested = true;
   session.requestReferenceSpace("viewer").then((viewerSpace) => {
-    session.requestHitTestSource({ space: viewerSpace }).then((source) => {
-      hitTestSource = source;
-    });
+    const options = { space: viewerSpace };
+    if (typeof XRRay === "function") options.offsetRay = new XRRay();
+    return session.requestHitTestSource(options);
+  }).then((source) => {
+    hitTestSource = source;
+  }).catch((err) => {
+    console.warn("hit-test source failed", err);
+    window.setTimeout(() => {
+      hitTestSourceRequested = false;
+    }, 600);
   });
   session.addEventListener("end", () => {
     hitTestSourceRequested = false;
@@ -787,7 +830,7 @@ function requestHitTest(session) {
 function updateHitTest(frame) {
   const referenceSpace = renderer.xr.getReferenceSpace();
   const session = renderer.xr.getSession();
-  if (!session) return;
+  if (!session || !referenceSpace) return;
 
   requestHitTest(session);
 
@@ -795,26 +838,32 @@ function updateHitTest(frame) {
   if (!pose) {
     if (hadPose && trialActive) trackingLost += 1;
     hadPose = false;
+    if (!workspacePlaced) applyFallbackReticle();
     return;
   }
   hadPose = true;
 
-  if (!hitTestSource) return;
-  const results = frame.getHitTestResults(hitTestSource);
-  const found = results.length > 0;
-  if (hadHit && !found && trialActive) trackingLost += 1;
-  hadHit = found;
+  let found = false;
+  if (hitTestSource) {
+    const results = frame.getHitTestResults(hitTestSource);
+    found = results.length > 0;
+    if (hadHit && !found && trialActive) trackingLost += 1;
+    hadHit = found;
 
-  if (!workspacePlaced && found) {
-    const hit = results[0];
-    const hitPose = hit.getPose(referenceSpace);
-    if (hitPose) {
-      reticle.visible = true;
-      reticle.matrix.fromArray(hitPose.transform.matrix);
+    if (!workspacePlaced && found) {
+      const hitPose = results[0].getPose(referenceSpace);
+      if (hitPose) {
+        reticle.visible = true;
+        reticle.userData.estimated = false;
+        reticle.matrix.fromArray(hitPose.transform.matrix);
+        reticle.material.color.setHex(0x7cff9a);
+        if (reticle.children[0]) reticle.children[0].material.color.setHex(0x7cff9a);
+        return;
+      }
     }
-  } else if (!workspacePlaced) {
-    reticle.visible = false;
   }
+
+  if (!workspacePlaced) applyFallbackReticle();
 }
 
 function animate(_timestamp, frame) {
@@ -878,6 +927,11 @@ function main() {
   downloadBtn.addEventListener("click", downloadCsv);
   enterARBtn.addEventListener("click", startAR);
   exitARBtn.addEventListener("click", endAR);
+  placeBtn.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    tryPlaceWorkspace();
+  });
   techniqueSelect.addEventListener("change", () => setTechnique(techniqueSelect.value));
   participantIdInput.addEventListener("change", () => {
     trialIndexByTechnique = { touch: 0, carry: 0 };
