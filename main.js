@@ -46,7 +46,6 @@ const techniqueSelect = document.getElementById("techniqueSelect");
 const trialCountEl = document.getElementById("trialCount");
 const finishBtn = document.getElementById("finishBtn");
 const replaceBtn = document.getElementById("replaceBtn");
-const downloadBtn = document.getElementById("downloadBtn");
 const exitARBtn = document.getElementById("exitARBtn");
 const arGate = document.getElementById("arGate");
 const arGateTitle = document.getElementById("arGateTitle");
@@ -86,6 +85,7 @@ let objects = [];
 let selected = null;
 
 let hitTestSource = null;
+let hitTestSourceRequested = false;
 let hadHit = false;
 
 let technique = "touch";
@@ -263,7 +263,7 @@ function buildWorkspace() {
 
 function buildReticle() {
   reticle = new THREE.Mesh(
-    new THREE.RingGeometry(0.10, 0.14, 32).rotateX(-Math.PI / 2),
+    new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2),
     new THREE.MeshBasicMaterial({ color: 0x7cff9a, transparent: true, opacity: 0.95 })
   );
   reticle.matrixAutoUpdate = false;
@@ -583,12 +583,14 @@ function updateHud() {
   }
 
   if (!workspacePlaced) {
-    cardTitle.textContent = tracked ? "Superficie detectada" : "Buscando superficie";
+    cardTitle.textContent = tracked
+      ? "Superficie detectada"
+      : hitTestSource ? "Buscando superficie" : "Iniciando detección";
     posErrorEl.textContent = "—";
     yawErrorEl.textContent = "—";
     cardStatus.textContent = tracked
       ? "Toca la pantalla o pulsa Colocar cubo aquí"
-      : "El anillo solo aparece cuando hay un plano real. Inclina el teléfono hacia la mesa y muévelo despacio (luz y textura).";
+      : "Apunta a la mesa y muévelo en círculos lentos. El anillo verde aparece sobre el plano real.";
   } else {
     cardTitle.textContent = "Encaja el cubo en el fantasma";
     posErrorEl.textContent = errors.posCm == null ? "—" : `${errors.posCm.toFixed(1)} cm`;
@@ -663,7 +665,7 @@ function setTechnique(next) {
 
 function sessionInit() {
   return {
-    requiredFeatures: ["local", "hit-test"],
+    requiredFeatures: ["hit-test"],
     optionalFeatures: ["dom-overlay"],
     domOverlay: { root: overlay },
   };
@@ -742,7 +744,8 @@ function onSessionStart() {
   scene.background = null;
   exitARBtn.hidden = false;
   overlay.style.display = "";
-  bindHitTestSource();
+  hitTestSource = null;
+  hitTestSourceRequested = false;
   relocate();
 }
 
@@ -787,7 +790,8 @@ function onSessionEnd() {
   if (desktopHelpers) desktopHelpers.visible = !isPhone();
   scene.background = isPhone() ? null : new THREE.Color(0x9eb4c4);
   exitARBtn.hidden = true;
-  clearHitTestSource();
+  hitTestSource = null;
+  hitTestSourceRequested = false;
   restoreOverlay();
   window.setTimeout(restoreOverlay, 0);
   camera.position.set(0.05, 0.85, 0.95);
@@ -795,38 +799,26 @@ function onSessionEnd() {
   updateHud();
 }
 
-function clearHitTestSource() {
-  if (hitTestSource) {
-    try {
-      hitTestSource.cancel();
-    } catch (_err) {
-      // Some browsers cancel the source when the session ends.
-    }
-    hitTestSource = null;
-  }
-}
-
-function bindHitTestSource() {
-  const session = renderer.xr.getSession();
-  if (!session) return;
-  clearHitTestSource();
+function requestHitTestSource(session) {
+  if (hitTestSourceRequested || !session) return;
+  hitTestSourceRequested = true;
   session.requestReferenceSpace("viewer").then((viewerSpace) => {
-    if (renderer.xr.getSession() !== session) return null;
     return session.requestHitTestSource({ space: viewerSpace });
   }).then((source) => {
-    if (!source) return;
-    if (renderer.xr.getSession() !== session) {
-      source.cancel();
-      return;
-    }
     hitTestSource = source;
   }).catch((err) => {
     console.warn("hit-test source failed", err);
+    hitTestSourceRequested = false;
   });
 }
 
 function updateHitTest(frame) {
+  const session = renderer.xr.getSession();
   const referenceSpace = renderer.xr.getReferenceSpace();
+  if (!session) return;
+
+  requestHitTestSource(session);
+
   if (!referenceSpace) {
     if (!workspacePlaced) reticle.visible = false;
     return;
@@ -836,10 +828,9 @@ function updateHitTest(frame) {
   if (!viewerPose) {
     if (hadPose && trialActive) trackingLost += 1;
     hadPose = false;
-    if (!workspacePlaced) reticle.visible = false;
-    return;
+  } else {
+    hadPose = true;
   }
-  hadPose = true;
 
   if (!hitTestSource) {
     if (!workspacePlaced) reticle.visible = false;
@@ -872,6 +863,7 @@ function updateHitTest(frame) {
   reticle.visible = true;
   reticle.userData.estimated = false;
   reticle.matrix.fromArray(hitPose.transform.matrix);
+  reticle.matrixWorldNeedsUpdate = true;
   reticle.material.color.setHex(0x7cff9a);
   if (reticle.children[0]) reticle.children[0].material.color.setHex(0x7cff9a);
 }
@@ -935,7 +927,6 @@ function main() {
 
   finishBtn.addEventListener("click", finishTrial);
   replaceBtn.addEventListener("click", relocate);
-  downloadBtn.addEventListener("click", downloadCsv);
   enterARBtn.addEventListener("click", startAR);
   exitARBtn.addEventListener("click", endAR);
   placeBtn.addEventListener("click", (event) => {
@@ -1001,6 +992,7 @@ window.__A4 = {
   finishTrial,
   measureErrors,
   matchingObject,
+  downloadCsv,
   get selected() {
     return selected;
   },
