@@ -1,13 +1,13 @@
 // MAC0623 — A4 Mobile AR Docking
 //
 // Hit-test: immersive-web sample (viewer space + local pose, no fallback ray).
-// Task: place a workspace on a real table, pick the matching piece, dock it
-// onto a translucent ghost (x, z, yaw). Two techniques:
+// Task: place a workspace on a real table, then dock one 3-color cube into
+// a translucent ghost (x, z, yaw). Opposite faces share a color.
 //   1. touch  — one-finger drag on the plane, two-finger twist
 //   2. carry  — hold a button and move the phone; ↺ ↻ for yaw
 //
-// Timing starts at the first selection of the *correct* object and ends
-// when the user taps Finalizar intento.
+// Timing starts at the first move of the cube and ends when the user taps
+// Finalizar intento.
 
 import * as THREE from "three";
 import { ARButton } from "three/addons/webxr/ARButton.js";
@@ -19,10 +19,14 @@ const OBJECT_DISTANCE_MIN = 0.30;
 const OBJECT_DISTANCE_MAX = 0.50;
 const CARRY_ROT_STEP = THREE.MathUtils.degToRad(8);
 
-const SHAPES = [
-  { type: "cube", name: "Cubo azul", color: 0x3d8bfd },
-  { type: "sphere", name: "Esfera roja", color: 0xe74c3c },
-  { type: "pyramid", name: "Pirámide amarilla", color: 0xf1c40f },
+// BoxGeometry materials: +X, -X, +Y, -Y, +Z, -Z. Opposite faces share a color.
+const FACE_COLOR_X = 0x3d8bfd;
+const FACE_COLOR_Y = 0xf1c40f;
+const FACE_COLOR_Z = 0xe74c3c;
+const FACE_COLORS = [
+  FACE_COLOR_X, FACE_COLOR_X,
+  FACE_COLOR_Y, FACE_COLOR_Y,
+  FACE_COLOR_Z, FACE_COLOR_Z,
 ];
 
 const CSV_HEADER = [
@@ -107,12 +111,8 @@ function participantId() {
   return (participantIdInput.value.trim() || "UNKNOWN").replace(/,/g, "");
 }
 
-function shapeInfo(type) {
-  return SHAPES.find((s) => s.type === type);
-}
-
 function matchingObject() {
-  return objects.find((obj) => obj.userData.type === ghost.userData.type) || null;
+  return objects[0] || null;
 }
 
 function shortestYawDeg(a, b) {
@@ -142,41 +142,53 @@ function makeMaterial(color, ghosted) {
     roughness: 0.42,
     metalness: 0.08,
     transparent: ghosted,
-    opacity: ghosted ? 0.42 : 1,
+    opacity: ghosted ? 0.45 : 1,
     depthWrite: !ghosted,
     emissive: new THREE.Color(0x000000),
     emissiveIntensity: 0,
   });
 }
 
-function makeShapeMesh(type, color, ghosted) {
-  const mat = makeMaterial(color, ghosted);
-  let mesh;
-  if (type === "cube") {
-    mesh = new THREE.Mesh(new THREE.BoxGeometry(SIZE, SIZE, SIZE), mat);
-  } else if (type === "sphere") {
-    mesh = new THREE.Mesh(new THREE.SphereGeometry(SIZE / 2, 28, 18), mat);
-  } else {
-    mesh = new THREE.Mesh(new THREE.ConeGeometry(SIZE * 0.55, SIZE, 4), mat);
-    mesh.rotation.y = Math.PI / 4;
-  }
+function eachMaterial(mesh, fn) {
+  if (!mesh) return;
+  const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  mats.forEach(fn);
+}
+
+function makeShapeMesh(ghosted) {
+  const geometry = new THREE.BoxGeometry(SIZE, SIZE, SIZE);
+  const mesh = new THREE.Mesh(
+    geometry,
+    FACE_COLORS.map((color) => makeMaterial(color, ghosted))
+  );
   mesh.position.y = SIZE / 2;
   mesh.castShadow = false;
+  const edges = new THREE.LineSegments(
+    new THREE.EdgesGeometry(geometry),
+    new THREE.LineBasicMaterial({
+      color: 0x111111,
+      transparent: ghosted,
+      opacity: ghosted ? 0.35 : 0.9,
+    })
+  );
+  edges.userData.ignorePick = true;
+  mesh.add(edges);
   return mesh;
 }
 
 function makeYawMark(ghosted) {
   const mark = new THREE.Mesh(
-    new THREE.BoxGeometry(SIZE * 0.12, SIZE * 0.12, SIZE * 0.42),
-    new THREE.MeshStandardMaterial({
+    new THREE.ConeGeometry(SIZE * 0.07, SIZE * 0.16, 3),
+    new THREE.MeshBasicMaterial({
       color: 0xffffff,
       transparent: ghosted,
-      opacity: ghosted ? 0.45 : 1,
-      roughness: 0.35,
+      opacity: ghosted ? 0.7 : 1,
+      depthWrite: !ghosted,
     })
   );
-  mark.position.set(0, SIZE * 0.62, SIZE * 0.22);
-  mark.userData.ignorePick = false;
+  mark.rotation.x = -Math.PI / 2;
+  mark.position.set(0, SIZE + 0.001, SIZE * 0.22);
+  mark.userData.ignorePick = true;
   return mark;
 }
 
@@ -197,13 +209,11 @@ function makeHighlightRing() {
   return ring;
 }
 
-function createPiece(type, ghosted) {
-  const info = shapeInfo(type);
+function createPiece(ghosted) {
   const group = new THREE.Group();
-  group.userData.type = type;
+  group.userData.type = "cube";
   group.userData.ghosted = ghosted;
-  group.userData.baseColor = info.color;
-  const mesh = makeShapeMesh(type, info.color, ghosted);
+  const mesh = makeShapeMesh(ghosted);
   mesh.name = "body";
   group.add(mesh);
   group.add(makeYawMark(ghosted));
@@ -218,13 +228,6 @@ function createPiece(type, ghosted) {
     group.add(hit);
   }
   return group;
-}
-
-function rebuildGhost(type) {
-  if (ghost) workspace.remove(ghost);
-  ghost = createPiece(type, true);
-  ghost.name = "ghost";
-  workspace.add(ghost);
 }
 
 function buildWorkspace() {
@@ -247,14 +250,14 @@ function buildWorkspace() {
   disk.userData.ignorePick = true;
   workspace.add(disk);
 
-  objects = SHAPES.map((s) => {
-    const piece = createPiece(s.type, false);
-    piece.name = s.type;
-    workspace.add(piece);
-    return piece;
-  });
+  const piece = createPiece(false);
+  piece.name = "cube";
+  workspace.add(piece);
+  objects = [piece];
 
-  rebuildGhost("cube");
+  ghost = createPiece(true);
+  ghost.name = "ghost";
+  workspace.add(ghost);
   scene.add(workspace);
 }
 
@@ -286,8 +289,6 @@ function setPieceOnPlane(piece, worldPoint) {
 }
 
 function layoutTrial() {
-  const targetType = SHAPES[Math.floor(Math.random() * SHAPES.length)].type;
-  rebuildGhost(targetType);
   ghost.position.set(0, 0, 0);
   ghost.rotation.set(0, Math.random() * Math.PI * 2, 0);
 
@@ -298,20 +299,11 @@ function layoutTrial() {
   _local.normalize();
 
   const facing = Math.atan2(_local.x, _local.z);
-  const spreads = [-1.15, 0, 1.15];
-  const shuffled = [...objects].sort(() => Math.random() - 0.5);
-  shuffled.forEach((piece, i) => {
-    const dist = THREE.MathUtils.lerp(
-      OBJECT_DISTANCE_MIN,
-      OBJECT_DISTANCE_MAX,
-      Math.random()
-    );
-    const angle = facing + spreads[i];
-    piece.position.set(Math.sin(angle) * dist, 0, Math.cos(angle) * dist);
-    piece.rotation.set(0, Math.random() * Math.PI * 2, 0);
-  });
+  const dist = THREE.MathUtils.lerp(OBJECT_DISTANCE_MIN, OBJECT_DISTANCE_MAX, Math.random());
+  const piece = objects[0];
+  piece.position.set(Math.sin(facing) * dist, 0, Math.cos(facing) * dist);
+  piece.rotation.set(0, Math.random() * Math.PI * 2, 0);
 
-  clearSelection();
   applyDockedLook(false);
 }
 
@@ -347,6 +339,7 @@ function beginTrial() {
   trackingLost = 0;
   carrying = false;
   carryBtn.classList.remove("held");
+  if (objects[0]) selectPiece(objects[0], false);
   updateHud();
 }
 
@@ -369,10 +362,10 @@ function relocate() {
 function highlightPiece(piece, on) {
   const body = piece.getObjectByName("body");
   const ring = piece.children.find((c) => c.geometry && c.geometry.type === "RingGeometry");
-  if (body) {
-    body.material.emissive.setHex(on ? 0xffffff : 0x000000);
-    body.material.emissiveIntensity = on ? 0.28 : 0;
-  }
+  eachMaterial(body, (mat) => {
+    mat.emissive.setHex(on ? 0xffffff : 0x000000);
+    mat.emissiveIntensity = on ? 0.16 : 0;
+  });
   if (ring) ring.visible = on;
 }
 
@@ -381,18 +374,17 @@ function clearSelection() {
   selected = null;
 }
 
-function selectPiece(piece) {
-  if (selected === piece) return;
-  if (selected) highlightPiece(selected, false);
-  selected = piece;
-  highlightPiece(piece, true);
+function markTrialStarted() {
+  if (trialActive && !correctSelectTime) correctSelectTime = performance.now();
+}
 
-  if (trialActive && piece.userData.type !== ghost.userData.type) {
-    wrongSelections += 1;
+function selectPiece(piece, startTimer = true) {
+  if (selected !== piece) {
+    if (selected) highlightPiece(selected, false);
+    selected = piece;
+    highlightPiece(piece, true);
   }
-  if (trialActive && piece.userData.type === ghost.userData.type && !correctSelectTime) {
-    correctSelectTime = performance.now();
-  }
+  if (startTimer) markTrialStarted();
 }
 
 function pointerToNDC(event) {
@@ -492,12 +484,16 @@ function onPointerMove(event) {
     const angle = twistAngle();
     selected.rotation.y += angle - lastTwist;
     lastTwist = angle;
+    markTrialStarted();
     return;
   }
 
   if (dragging && technique === "touch") {
     const point = intersectWorkPlane(event);
-    if (point) setPieceOnPlane(selected, point);
+    if (point) {
+      setPieceOnPlane(selected, point);
+      markTrialStarted();
+    }
   }
 }
 
@@ -510,12 +506,16 @@ function onPointerUp(event) {
 function applyCarry() {
   if (!carrying || technique !== "carry" || !selected || !workspacePlaced) return;
   const point = intersectWorkPlaneCenter();
-  if (point) setPieceOnPlane(selected, point);
+  if (point) {
+    setPieceOnPlane(selected, point);
+    markTrialStarted();
+  }
 }
 
 function nudgeYaw(dir) {
   if (!selected) return;
   selected.rotation.y += dir * CARRY_ROT_STEP;
+  markTrialStarted();
 }
 
 function startRotHold(dir) {
@@ -533,11 +533,10 @@ function stopRotHold() {
 
 function applyDockedLook(on) {
   if (!ghost) return;
-  const body = ghost.getObjectByName("body");
-  if (body) {
-    body.material.emissive.setHex(on ? 0x33ff66 : 0x000000);
-    body.material.emissiveIntensity = on ? 0.35 : 0;
-  }
+  eachMaterial(ghost.getObjectByName("body"), (mat) => {
+    mat.emissive.setHex(on ? 0x33ff66 : 0x000000);
+    mat.emissiveIntensity = on ? 0.28 : 0;
+  });
 }
 
 function isPresenting() {
@@ -559,13 +558,10 @@ function updateHud() {
   overlay.classList.toggle("placed", workspacePlaced);
   overlay.classList.toggle("presenting", presenting);
 
-  const info = ghost ? shapeInfo(ghost.userData.type) : null;
   const errors = measureErrors();
-  const match = matchingObject();
-  const wrong = selected && match && selected !== match;
 
   errorCard.classList.toggle("in-tolerance", Boolean(errors.docked));
-  errorCard.classList.toggle("wrong-selected", Boolean(wrong));
+  errorCard.classList.toggle("wrong-selected", false);
   applyDockedLook(Boolean(errors.docked));
 
   if (!presenting) {
@@ -591,22 +587,20 @@ function updateHud() {
     posErrorEl.textContent = "—";
     yawErrorEl.textContent = "—";
     cardStatus.textContent = tracked
-      ? "Toca la pantalla o pulsa Colocar piezas aquí"
+      ? "Toca la pantalla o pulsa Colocar cubo aquí"
       : "El anillo solo aparece cuando hay un plano real. Inclina el teléfono hacia la mesa y muévelo despacio (luz y textura).";
   } else {
-    cardTitle.textContent = info ? `Fantasma: ${info.name}` : "Fantasma";
+    cardTitle.textContent = "Encaja el cubo en el fantasma";
     posErrorEl.textContent = errors.posCm == null ? "—" : `${errors.posCm.toFixed(1)} cm`;
     yawErrorEl.textContent = errors.yawDeg == null ? "—" : `${errors.yawDeg.toFixed(1)}°`;
-    if (wrong) {
-      cardStatus.textContent = "Pieza incorrecta seleccionada — elige la del mismo color";
-    } else if (errors.docked) {
+    if (errors.docked) {
       cardStatus.textContent = "Encajado — pulsa Finalizar intento";
     } else if (selected) {
       cardStatus.textContent = technique === "carry"
-        ? "Mantén Llevar y mueve el teléfono; ↺ ↻ rotan"
-        : "Arrastra con un dedo; gira con dos";
+        ? "Mantén Llevar y mueve el teléfono; ↺ ↻ rotan. Alinea colores y la flecha blanca."
+        : "Arrastra con un dedo; gira con dos. Alinea colores y la flecha blanca.";
     } else {
-      cardStatus.textContent = "Toca la pieza que coincide con el fantasma";
+      cardStatus.textContent = "Toca el cubo para seleccionarlo";
     }
   }
 
@@ -958,7 +952,7 @@ function main() {
   carryBtn.addEventListener("pointerdown", (event) => {
     event.preventDefault();
     if (!selected) {
-      cardStatus.textContent = "Primero toca una pieza para seleccionarla";
+      cardStatus.textContent = "Primero toca el cubo para seleccionarlo";
       return;
     }
     carrying = true;
