@@ -752,28 +752,62 @@ async function diagnoseAR() {
   return immersive;
 }
 
+let arStartBusy = false;
+
+async function endStaleArSession() {
+  const session = renderer.xr.getSession();
+  if (session) {
+    try {
+      await session.end();
+    } catch (_err) {
+      // ignore
+    }
+  }
+}
+
 async function startAR() {
-  if (isPresenting()) return;
+  if (isPresenting() || arStartBusy) return;
   if (!arSupported) {
     await diagnoseAR();
     return;
   }
+
+  const arBtn = document.getElementById("ARButton");
+  if (arBtn && !arBtn.disabled && arBtn.textContent !== "AR NOT SUPPORTED") {
+    arBtn.click();
+    return;
+  }
+
+  arStartBusy = true;
+  let session = null;
   try {
-    renderer.xr.setReferenceSpaceType("local-floor");
-    const session = await navigator.xr.requestSession("immersive-ar", sessionInit());
+    session = await navigator.xr.requestSession("immersive-ar", sessionInit());
+    renderer.xr.setReferenceSpaceType("local");
     await renderer.xr.setSession(session);
-  } catch (firstErr) {
-    try {
-      renderer.xr.setReferenceSpaceType("local");
-      const session = await navigator.xr.requestSession("immersive-ar", sessionInit());
-      await renderer.xr.setSession(session);
-    } catch (err) {
+  } catch (err) {
+    if (session) {
+      try {
+        await session.end();
+      } catch (_e) {
+        // ignore
+      }
+    }
+    const msg = err && err.message ? err.message : String(err);
+    if (/already an active/i.test(msg)) {
+      await endStaleArSession();
+      setGateMessage(
+        "AR ya estaba abierta",
+        "Se cerró la sesión anterior. Pulsa otra vez <b>Entrar en AR</b> o <b>START AR</b> (usa solo uno de los dos)."
+      );
+    } else {
       setGateMessage(
         "No se pudo iniciar AR",
-        `El navegador rechazó la sesión: <b>${err.message}</b>.`
+        `El navegador rechazó la sesión: <b>${msg}</b>.`
       );
-      console.warn("AR session failed", firstErr, err);
     }
+    console.warn("AR session failed", err);
+  } finally {
+    arStartBusy = false;
   }
 }
 
@@ -786,6 +820,7 @@ function onSessionStart() {
   if (desktopHelpers) desktopHelpers.visible = false;
   scene.background = null;
   exitARBtn.hidden = false;
+  enterARBtn.disabled = true;
   overlay.style.display = "";
   hitTestSource = null;
   hitTestSourceRequested = false;
@@ -833,6 +868,9 @@ function onSessionEnd() {
   if (desktopHelpers) desktopHelpers.visible = !isPhone();
   scene.background = isPhone() ? null : new THREE.Color(0x9eb4c4);
   exitARBtn.hidden = true;
+  enterARBtn.disabled = !arSupported;
+  hitTestSource = null;
+  hitTestSourceRequested = false;
   restoreOverlay();
   window.setTimeout(restoreOverlay, 0);
   camera.position.set(0.05, 0.85, 0.95);
@@ -999,7 +1037,7 @@ function main() {
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setClearColor(0x000000, isPhone() ? 0 : 1);
   renderer.xr.enabled = true;
-  renderer.xr.setReferenceSpaceType("local-floor");
+  renderer.xr.setReferenceSpaceType("local");
   document.body.appendChild(renderer.domElement);
 
   document.body.appendChild(ARButton.createButton(renderer, sessionInit()));
