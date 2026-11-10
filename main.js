@@ -11,7 +11,6 @@
 
 import * as THREE from "three";
 import { ARButton } from "three/addons/webxr/ARButton.js";
-import { XRPlanes } from "three/addons/webxr/XRPlanes.js";
 
 const SIZE = 0.20;
 const POS_TOLERANCE_M = 0.02;
@@ -75,11 +74,9 @@ const _forward = new THREE.Vector3();
 const _local = new THREE.Vector3();
 const _raycaster = new THREE.Raycaster();
 const _workPlane = new THREE.Plane();
-const _one = new THREE.Vector3(1, 1, 1);
-const _reticleQuat = new THREE.Quaternion();
 
 let scene, camera, renderer;
-let reticle, workspace, ghost, desktopHelpers, xrPlanes;
+let reticle, workspace, ghost, desktopHelpers;
 let arSupported = false;
 let objects = [];
 let selected = null;
@@ -87,10 +84,6 @@ let selected = null;
 let hitTestSource = null;
 let hitTestSourceRequested = false;
 let hadHit = false;
-let hitTestError = "";
-let hitTestMode = "";
-let lastHitCount = 0;
-let planeCount = 0;
 
 let technique = "touch";
 let workspacePlaced = false;
@@ -267,26 +260,12 @@ function buildWorkspace() {
 
 function buildReticle() {
   reticle = new THREE.Mesh(
-    new THREE.RingGeometry(0.18, 0.26, 32).rotateX(-Math.PI / 2),
-    new THREE.MeshBasicMaterial({
-      color: 0x7cff9a,
-      transparent: true,
-      opacity: 0.95,
-      depthTest: false,
-    })
+    new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({ color: 0x7cff9a })
   );
   reticle.matrixAutoUpdate = false;
-  reticle.frustumCulled = false;
-  reticle.renderOrder = 10;
   reticle.visible = false;
-  reticle.userData.estimated = true;
   scene.add(reticle);
-
-  const inner = new THREE.Mesh(
-    new THREE.CircleGeometry(0.02, 16).rotateX(-Math.PI / 2),
-    new THREE.MeshBasicMaterial({ color: 0x7cff9a, depthTest: false })
-  );
-  reticle.add(inner);
 }
 
 function getViewCamera() {
@@ -334,14 +313,10 @@ function layoutTrial() {
 function placeWorkspaceFromReticle() {
   if (!reticle.visible) return;
   reticle.matrix.decompose(workspace.position, workspace.quaternion, workspace.scale);
-  if (reticle.userData.estimated) {
-    workspace.quaternion.identity();
-  }
   workspace.scale.set(1, 1, 1);
   workspace.visible = true;
   workspacePlaced = true;
   reticle.visible = false;
-  if (xrPlanes) xrPlanes.visible = false;
   workspace.updateMatrixWorld(true);
   updateWorkPlane();
   beginTrial();
@@ -354,7 +329,6 @@ function placeWorkspaceDesktop(point) {
   workspace.visible = true;
   workspacePlaced = true;
   reticle.visible = false;
-  if (xrPlanes) xrPlanes.visible = false;
   workspace.updateMatrixWorld(true);
   updateWorkPlane();
   beginTrial();
@@ -378,11 +352,7 @@ function relocate() {
   workspace.visible = false;
   workspacePlaced = false;
   trialActive = false;
-  if (xrPlanes) xrPlanes.visible = true;
-  if (reticle) {
-    reticle.visible = false;
-    reticle.userData.estimated = true;
-  }
+  if (reticle) reticle.visible = false;
   clearSelection();
   carrying = false;
   dragging = false;
@@ -465,17 +435,13 @@ function isHudEvent(event) {
 }
 
 function hasRealHit() {
-  return Boolean(reticle && reticle.visible && !reticle.userData.estimated);
-}
-
-function hasPlaceableReticle() {
   return Boolean(reticle && reticle.visible);
 }
 
 function tryPlaceWorkspace() {
   if (workspacePlaced || !isPresenting()) return;
-  if (!hasPlaceableReticle()) {
-    cardStatus.textContent = "Espera un momento con la cámara activa hasta que aparezca el anillo.";
+  if (!reticle.visible) {
+    cardStatus.textContent = "Aún no hay superficie. Mueve el teléfono hasta que aparezca el anillo verde.";
     return;
   }
   placeWorkspaceFromReticle();
@@ -609,30 +575,22 @@ function updateHud() {
   }
 
   const tracked = hasRealHit();
-  const placeable = hasPlaceableReticle();
-  const estimated = placeable && reticle && reticle.userData.estimated;
   if (aimEl) {
-    aimEl.hidden = workspacePlaced || !placeable;
+    aimEl.hidden = workspacePlaced || !tracked;
     aimEl.classList.toggle("tracked", tracked);
   }
   if (placeBtn) {
     placeBtn.hidden = workspacePlaced;
-    placeBtn.disabled = !workspacePlaced && !placeable;
+    placeBtn.disabled = !workspacePlaced && !tracked;
   }
 
   if (!workspacePlaced) {
-    cardTitle.textContent = tracked
-      ? "Superficie detectada"
-      : estimated
-        ? "Lista para colocar (estimado)"
-        : hitTestSource ? "Buscando superficie" : "Iniciando detección";
+    cardTitle.textContent = tracked ? "Superficie detectada" : "Buscando superficie";
     posErrorEl.textContent = "—";
     yawErrorEl.textContent = "—";
-    cardStatus.textContent = placeable
-      ? (estimated
-        ? `Anillo naranja (sin plano de ARCore). ${scanStatus()}`
-        : "Toca la pantalla o pulsa Colocar cubo aquí")
-      : scanStatus();
+    cardStatus.textContent = tracked
+      ? "Toca la pantalla o pulsa Colocar cubo aquí"
+      : "Apunta a la mesa y muévelo de lado. El anillo verde solo aparece cuando el hit-test encuentra una superficie.";
   } else {
     cardTitle.textContent = "Encaja el cubo en el fantasma";
     posErrorEl.textContent = errors.posCm == null ? "—" : `${errors.posCm.toFixed(1)} cm`;
@@ -708,7 +666,7 @@ function setTechnique(next) {
 function sessionInit() {
   return {
     requiredFeatures: ["hit-test"],
-    optionalFeatures: ["dom-overlay", "plane-detection"],
+    optionalFeatures: ["dom-overlay"],
     domOverlay: { root: overlay },
   };
 }
@@ -870,12 +828,6 @@ function restoreOverlay() {
   overlay.style.display = "";
 }
 
-function scanStatus() {
-  const source = hitTestSource ? `hit-test ${hitTestMode || "activo"}` : "hit-test aún no listo";
-  const err = hitTestError ? ` Error: ${hitTestError}.` : "";
-  return `${source}. Impactos: ${lastHitCount}. Planos: ${planeCount}.${err} Mueve el teléfono de lado (no solo gíralo), a 40–80 cm, con buena luz.`;
-}
-
 function onSessionEnd() {
   if (desktopHelpers) desktopHelpers.visible = !isPhone();
   scene.background = isPhone() ? null : new THREE.Color(0x9eb4c4);
@@ -883,10 +835,6 @@ function onSessionEnd() {
   enterARBtn.disabled = !arSupported;
   hitTestSource = null;
   hitTestSourceRequested = false;
-  hitTestError = "";
-  hitTestMode = "";
-  lastHitCount = 0;
-  planeCount = 0;
   restoreOverlay();
   window.setTimeout(restoreOverlay, 0);
   camera.position.set(0.05, 0.85, 0.95);
@@ -894,91 +842,22 @@ function onSessionEnd() {
   updateHud();
 }
 
-function styleDetectedPlanes() {
-  if (!xrPlanes) return;
-  xrPlanes.traverse((obj) => {
-    if (!obj.isMesh || !obj.material) return;
-    obj.material.transparent = true;
-    obj.material.opacity = 0.45;
-    obj.material.color.setHex(0x39ff7a);
-    obj.material.depthWrite = false;
-    obj.material.side = THREE.DoubleSide;
-  });
-}
-
-function showReticleMatrix(matrix, estimated = false) {
-  reticle.visible = true;
-  reticle.userData.estimated = estimated;
-  reticle.matrix.copy(matrix);
-  reticle.matrixWorldNeedsUpdate = true;
-  const color = estimated ? 0xffcc33 : 0x7cff9a;
-  reticle.material.color.setHex(color);
-  if (reticle.children[0]) reticle.children[0].material.color.setHex(color);
-}
-
-function applyFallbackReticle() {
-  const cam = getViewCamera();
-  cam.getWorldPosition(_camPos);
-  cam.getWorldDirection(_forward);
-  const tableY = _camPos.y - 0.55;
-  const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -tableY);
-  _raycaster.set(_camPos, _forward);
-  if (!_raycaster.ray.intersectPlane(plane, _hit)) {
-    _hit.copy(_camPos).addScaledVector(_forward, 0.5);
-    _hit.y = tableY;
-  }
-  _reticleQuat.identity();
-  reticle.matrix.compose(_hit, _reticleQuat, _one);
-  showReticleMatrix(reticle.matrix, true);
-}
-
-function updateReticleFromPlanes() {
-  if (!xrPlanes || !xrPlanes.visible || xrPlanes.children.length === 0) return false;
-  const cam = getViewCamera();
-  cam.getWorldPosition(_camPos);
-  cam.getWorldDirection(_forward);
-  _raycaster.set(_camPos, _forward);
-  const hits = _raycaster.intersectObject(xrPlanes, true);
-  if (!hits.length) return false;
-  const hit = hits[0];
-  hit.object.getWorldQuaternion(_reticleQuat);
-  reticle.matrix.compose(hit.point, _reticleQuat, _one);
-  showReticleMatrix(reticle.matrix, false);
-  return true;
-}
-
 function updateHitTest(frame) {
   const referenceSpace = renderer.xr.getReferenceSpace();
   const session = renderer.xr.getSession();
-  if (!session || !referenceSpace) {
-    if (!workspacePlaced) reticle.visible = false;
-    return;
-  }
+  if (!session || !referenceSpace) return;
 
   if (hitTestSourceRequested === false) {
-    hitTestSourceRequested = true;
     session.requestReferenceSpace("viewer").then((viewerSpace) => {
-      const withPoints = { space: viewerSpace, entityTypes: ["plane", "point"] };
-      return session.requestHitTestSource(withPoints).then((source) => {
-        hitTestMode = "plano+punto";
-        return source;
-      }).catch(() => session.requestHitTestSource({ space: viewerSpace }).then((source) => {
-        hitTestMode = "solo plano";
-        return source;
-      }));
-    }).then((source) => {
-      hitTestSource = source;
-      hitTestError = "";
-    }).catch((err) => {
-      hitTestError = err && err.message ? err.message : "no se pudo crear el hit-test";
-      hitTestSourceRequested = false;
-      console.warn("hit-test source failed", err);
+      session.requestHitTestSource({ space: viewerSpace }).then((source) => {
+        hitTestSource = source;
+      });
     });
     session.addEventListener("end", () => {
       hitTestSourceRequested = false;
       hitTestSource = null;
-      hitTestMode = "";
-    }, { once: true });
+    });
+    hitTestSourceRequested = true;
   }
 
   const viewerPose = frame.getViewerPose(referenceSpace);
@@ -989,40 +868,31 @@ function updateHitTest(frame) {
     hadPose = true;
   }
 
-  planeCount = frame.detectedPlanes ? frame.detectedPlanes.size : 0;
-
   if (workspacePlaced) {
     reticle.visible = false;
     return;
   }
 
-  let found = false;
-  lastHitCount = 0;
-  if (hitTestSource) {
-    const hitTestResults = frame.getHitTestResults(hitTestSource);
-    lastHitCount = hitTestResults.length;
-    found = lastHitCount > 0;
-    if (found) {
-      const pose = hitTestResults[0].getPose(referenceSpace);
-      if (pose) {
-        reticle.matrix.fromArray(pose.transform.matrix);
-        showReticleMatrix(reticle.matrix, false);
-      } else {
-        found = false;
-      }
-    }
+  if (!hitTestSource) {
+    reticle.visible = false;
+    return;
   }
 
-  if (hadHit && !found && trialActive) trackingLost += 1;
-  hadHit = found;
+  const hitTestResults = frame.getHitTestResults(hitTestSource);
+  if (hadHit && hitTestResults.length === 0 && trialActive) trackingLost += 1;
+  hadHit = hitTestResults.length > 0;
 
-  if (!found && !updateReticleFromPlanes()) {
-    if (viewerPose) {
-      applyFallbackReticle();
-    } else {
+  if (hitTestResults.length) {
+    const hit = hitTestResults[0];
+    const pose = hit.getPose(referenceSpace);
+    if (!pose) {
       reticle.visible = false;
-      reticle.userData.estimated = true;
+      return;
     }
+    reticle.visible = true;
+    reticle.matrix.fromArray(pose.transform.matrix);
+  } else {
+    reticle.visible = false;
   }
 }
 
@@ -1068,10 +938,6 @@ function main() {
   document.body.appendChild(renderer.domElement);
 
   document.body.appendChild(ARButton.createButton(renderer, sessionInit()));
-
-  xrPlanes = new XRPlanes(renderer);
-  xrPlanes.addEventListener("planeschanged", styleDetectedPlanes);
-  scene.add(xrPlanes);
 
   buildReticle();
   buildWorkspace();
