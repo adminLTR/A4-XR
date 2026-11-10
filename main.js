@@ -74,6 +74,9 @@ const _forward = new THREE.Vector3();
 const _local = new THREE.Vector3();
 const _raycaster = new THREE.Raycaster();
 const _workPlane = new THREE.Plane();
+const _hitQuat = new THREE.Quaternion();
+const _hitScale = new THREE.Vector3();
+const _hitEuler = new THREE.Euler();
 
 let scene, camera, renderer;
 let reticle, workspace, ghost, desktopHelpers;
@@ -84,6 +87,10 @@ let selected = null;
 let hitTestSource = null;
 let hitTestSourceRequested = false;
 let hadHit = false;
+let lastHitResult = null;
+let placedAnchor = null;
+let anchorApplied = false;
+let suppressDragUntil = 0;
 
 let technique = "touch";
 let workspacePlaced = false;
@@ -306,15 +313,46 @@ function layoutTrial() {
   applyDockedLook(false);
 }
 
+function clearAnchor() {
+  if (placedAnchor && typeof placedAnchor.delete === "function") {
+    try {
+      placedAnchor.delete();
+    } catch (_err) {
+      // The session may already have dropped it.
+    }
+  }
+  placedAnchor = null;
+  anchorApplied = false;
+}
+
 function placeWorkspaceFromReticle() {
   if (!reticle.visible) return;
-  reticle.matrix.decompose(workspace.position, workspace.quaternion, workspace.scale);
+  reticle.matrix.decompose(workspace.position, _hitQuat, _hitScale);
+  _hitEuler.setFromQuaternion(_hitQuat, "YXZ");
+  workspace.rotation.set(0, _hitEuler.y, 0);
   workspace.scale.set(1, 1, 1);
   workspace.visible = true;
   workspacePlaced = true;
   reticle.visible = false;
   workspace.updateMatrixWorld(true);
   updateWorkPlane();
+  suppressDragUntil = performance.now() + 700;
+  dragging = false;
+  rotating = false;
+
+  const hit = lastHitResult;
+  if (hit && typeof hit.createAnchor === "function") {
+    hit.createAnchor().then((anchor) => {
+      if (!workspacePlaced) {
+        if (anchor && typeof anchor.delete === "function") anchor.delete();
+        return;
+      }
+      clearAnchor();
+      placedAnchor = anchor;
+    }).catch((err) => {
+      console.warn("anchor failed", err);
+    });
+  }
   beginTrial();
 }
 
@@ -348,6 +386,8 @@ function relocate() {
   workspace.visible = false;
   workspacePlaced = false;
   trialActive = false;
+  clearAnchor();
+  lastHitResult = null;
   if (reticle) reticle.visible = false;
   clearSelection();
   carrying = false;
@@ -447,6 +487,7 @@ function onPointerDown(event) {
   if (isHudEvent(event)) return;
   lastPointerAt = performance.now();
   pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  if (performance.now() < suppressDragUntil) return;
   if (trialActive) touchCount += 1;
 
   if (!workspacePlaced) {
@@ -476,6 +517,7 @@ function onPointerDown(event) {
 function onPointerMove(event) {
   if (!pointers.has(event.pointerId)) return;
   pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  if (performance.now() < suppressDragUntil) return;
   if (!workspacePlaced || !selected) return;
 
   if (rotating && pointers.size >= 2 && technique === "touch") {
@@ -662,7 +704,7 @@ function setTechnique(next) {
 function sessionInit() {
   return {
     requiredFeatures: ["hit-test"],
-    optionalFeatures: ["dom-overlay"],
+    optionalFeatures: ["dom-overlay", "anchors"],
     domOverlay: { root: overlay },
   };
 }
@@ -844,6 +886,8 @@ function onSessionEnd() {
   enterARBtn.disabled = !arSupported;
   hitTestSource = null;
   hitTestSourceRequested = false;
+  lastHitResult = null;
+  clearAnchor();
   restoreOverlay();
   window.setTimeout(restoreOverlay, 0);
   camera.position.set(0.05, 0.85, 0.95);
@@ -873,13 +917,29 @@ function updateHitTest(frame) {
     }
     reticle.visible = true;
     reticle.matrix.fromArray(pose.transform.matrix);
+    lastHitResult = hitTestResults[0];
   } else {
     reticle.visible = false;
+    lastHitResult = null;
   }
 }
 
+function updatePlacedAnchor(frame) {
+  if (!placedAnchor || !workspacePlaced || anchorApplied) return;
+  const referenceSpace = renderer.xr.getReferenceSpace();
+  if (!referenceSpace) return;
+  const pose = frame.getPose(placedAnchor.anchorSpace, referenceSpace);
+  if (!pose) return;
+  const p = pose.transform.position;
+  workspace.position.set(p.x, p.y, p.z);
+  anchorApplied = true;
+}
+
 function animate(_timestamp, frame) {
-  if (frame) updateHitTest(frame);
+  if (frame) {
+    updateHitTest(frame);
+    updatePlacedAnchor(frame);
+  }
   applyCarry();
   updateHud();
   renderer.render(scene, camera);
