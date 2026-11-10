@@ -102,7 +102,6 @@ let carrying = false;
 let rotHoldTimer = 0;
 let rotHoldDir = 0;
 let lastPointerAt = 0;
-let hadPose = true;
 
 function participantId() {
   return (participantIdInput.value.trim() || "UNKNOWN").replace(/,/g, "");
@@ -270,9 +269,6 @@ function buildReticle() {
 
 function getViewCamera() {
   if (renderer.xr.isPresenting) {
-    if (typeof renderer.xr.updateCamera === "function") {
-      renderer.xr.updateCamera(camera);
-    }
     const xrCam = renderer.xr.getCamera();
     xrCam.updateMatrixWorld(true);
     return xrCam;
@@ -440,8 +436,8 @@ function hasRealHit() {
 
 function tryPlaceWorkspace() {
   if (workspacePlaced || !isPresenting()) return;
-  if (!reticle.visible) {
-    cardStatus.textContent = "Aún no hay superficie. Mueve el teléfono hasta que aparezca el anillo verde.";
+  if (!hasPlaceableReticle()) {
+    cardStatus.textContent = "Espera un momento con la cámara activa hasta que aparezca el anillo.";
     return;
   }
   placeWorkspaceFromReticle();
@@ -590,7 +586,7 @@ function updateHud() {
     yawErrorEl.textContent = "—";
     cardStatus.textContent = tracked
       ? "Toca la pantalla o pulsa Colocar cubo aquí"
-      : "Apunta a la mesa y muévelo de lado. El anillo verde solo aparece cuando el hit-test encuentra una superficie.";
+      : "Mueve el teléfono sobre la mesa. El anillo verde aparece solo cuando el hit-test toca una superficie.";
   } else {
     cardTitle.textContent = "Encaja el cubo en el fantasma";
     posErrorEl.textContent = errors.posCm == null ? "—" : `${errors.posCm.toFixed(1)} cm`;
@@ -787,8 +783,21 @@ function onSessionStart() {
   enterARBtn.disabled = true;
   overlay.style.display = "";
   hitTestSource = null;
-  hitTestSourceRequested = false;
+  hitTestSourceRequested = true;
+  hadHit = false;
   relocate();
+
+  const session = renderer.xr.getSession();
+  if (!session) return;
+  session.requestReferenceSpace("viewer").then((viewerSpace) => {
+    if (renderer.xr.getSession() !== session) return null;
+    return session.requestHitTestSource({ space: viewerSpace });
+  }).then((source) => {
+    if (source && renderer.xr.getSession() === session) hitTestSource = source;
+  }).catch((err) => {
+    console.warn("hit-test source failed", err);
+    hitTestSourceRequested = false;
+  });
 }
 
 function pickFromRay(origin, direction) {
@@ -843,48 +852,21 @@ function onSessionEnd() {
 }
 
 function updateHitTest(frame) {
-  const referenceSpace = renderer.xr.getReferenceSpace();
-  const session = renderer.xr.getSession();
-  if (!session || !referenceSpace) return;
-
-  if (hitTestSourceRequested === false) {
-    session.requestReferenceSpace("viewer").then((viewerSpace) => {
-      session.requestHitTestSource({ space: viewerSpace }).then((source) => {
-        hitTestSource = source;
-      });
-    });
-    session.addEventListener("end", () => {
-      hitTestSourceRequested = false;
-      hitTestSource = null;
-    });
-    hitTestSourceRequested = true;
-  }
-
-  const viewerPose = frame.getViewerPose(referenceSpace);
-  if (!viewerPose) {
-    if (hadPose && trialActive) trackingLost += 1;
-    hadPose = false;
-  } else {
-    hadPose = true;
-  }
-
   if (workspacePlaced) {
     reticle.visible = false;
     return;
   }
+  if (!hitTestSource) return;
 
-  if (!hitTestSource) {
-    reticle.visible = false;
-    return;
-  }
+  const referenceSpace = renderer.xr.getReferenceSpace();
+  if (!referenceSpace) return;
 
   const hitTestResults = frame.getHitTestResults(hitTestSource);
   if (hadHit && hitTestResults.length === 0 && trialActive) trackingLost += 1;
   hadHit = hitTestResults.length > 0;
 
   if (hitTestResults.length) {
-    const hit = hitTestResults[0];
-    const pose = hit.getPose(referenceSpace);
+    const pose = hitTestResults[0].getPose(referenceSpace);
     if (!pose) {
       reticle.visible = false;
       return;
