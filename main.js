@@ -15,8 +15,6 @@ import { ARButton } from "three/addons/webxr/ARButton.js";
 const SIZE = 0.20;
 const POS_TOLERANCE_M = 0.02;
 const YAW_TOLERANCE_DEG = 10;
-const OBJECT_DISTANCE_MIN = 0.28;
-const OBJECT_DISTANCE_MAX = 0.40;
 const CARRY_ROT_STEP = THREE.MathUtils.degToRad(8);
 
 // BoxGeometry materials: +X, -X, +Y, -Y, +Z, -Z. Opposite faces share a color.
@@ -87,9 +85,6 @@ let selected = null;
 let hitTestSource = null;
 let hitTestSourceRequested = false;
 let hadHit = false;
-let lastHitResult = null;
-let placedAnchor = null;
-let anchorApplied = false;
 let suppressDragUntil = 0;
 
 let technique = "touch";
@@ -305,24 +300,12 @@ function layoutTrial() {
   _local.normalize();
 
   const facing = Math.atan2(_local.x, _local.z);
-  const dist = THREE.MathUtils.lerp(OBJECT_DISTANCE_MIN, OBJECT_DISTANCE_MAX, Math.random());
+  const side = facing + Math.PI / 2;
   const piece = objects[0];
-  piece.position.set(Math.sin(facing) * dist, 0, Math.cos(facing) * dist);
+  piece.position.set(Math.sin(side) * 0.18, 0, Math.cos(side) * 0.18);
   piece.rotation.set(0, Math.random() * Math.PI * 2, 0);
 
   applyDockedLook(false);
-}
-
-function clearAnchor() {
-  if (placedAnchor && typeof placedAnchor.delete === "function") {
-    try {
-      placedAnchor.delete();
-    } catch (_err) {
-      // The session may already have dropped it.
-    }
-  }
-  placedAnchor = null;
-  anchorApplied = false;
 }
 
 function placeWorkspaceFromReticle() {
@@ -339,20 +322,6 @@ function placeWorkspaceFromReticle() {
   suppressDragUntil = performance.now() + 700;
   dragging = false;
   rotating = false;
-
-  const hit = lastHitResult;
-  if (hit && typeof hit.createAnchor === "function") {
-    hit.createAnchor().then((anchor) => {
-      if (!workspacePlaced) {
-        if (anchor && typeof anchor.delete === "function") anchor.delete();
-        return;
-      }
-      clearAnchor();
-      placedAnchor = anchor;
-    }).catch((err) => {
-      console.warn("anchor failed", err);
-    });
-  }
   beginTrial();
 }
 
@@ -386,8 +355,6 @@ function relocate() {
   workspace.visible = false;
   workspacePlaced = false;
   trialActive = false;
-  clearAnchor();
-  lastHitResult = null;
   if (reticle) reticle.visible = false;
   clearSelection();
   carrying = false;
@@ -704,7 +671,7 @@ function setTechnique(next) {
 function sessionInit() {
   return {
     requiredFeatures: ["hit-test"],
-    optionalFeatures: ["dom-overlay", "anchors"],
+    optionalFeatures: ["dom-overlay"],
     domOverlay: { root: overlay },
   };
 }
@@ -879,15 +846,43 @@ function restoreOverlay() {
   overlay.style.display = "";
 }
 
+function cancelHitTest() {
+  if (hitTestSource && typeof hitTestSource.cancel === "function") {
+    try {
+      hitTestSource.cancel();
+    } catch (_err) {
+      // Already cancelled when the session ends.
+    }
+  }
+  hitTestSource = null;
+  hitTestSourceRequested = false;
+}
+
+function releaseXR() {
+  cancelHitTest();
+  const session = renderer && renderer.xr && renderer.xr.getSession && renderer.xr.getSession();
+  if (session) {
+    try {
+      session.end();
+    } catch (_err) {
+      // The page is already going away.
+    }
+  }
+  if (renderer) {
+    try {
+      renderer.setAnimationLoop(null);
+    } catch (_err) {
+      // Ignore.
+    }
+  }
+}
+
 function onSessionEnd() {
   if (desktopHelpers) desktopHelpers.visible = !isPhone();
   scene.background = isPhone() ? null : new THREE.Color(0x9eb4c4);
   exitARBtn.hidden = true;
   enterARBtn.disabled = !arSupported;
-  hitTestSource = null;
-  hitTestSourceRequested = false;
-  lastHitResult = null;
-  clearAnchor();
+  cancelHitTest();
   restoreOverlay();
   window.setTimeout(restoreOverlay, 0);
   camera.position.set(0.05, 0.85, 0.95);
@@ -917,29 +912,13 @@ function updateHitTest(frame) {
     }
     reticle.visible = true;
     reticle.matrix.fromArray(pose.transform.matrix);
-    lastHitResult = hitTestResults[0];
   } else {
     reticle.visible = false;
-    lastHitResult = null;
   }
-}
-
-function updatePlacedAnchor(frame) {
-  if (!placedAnchor || !workspacePlaced || anchorApplied) return;
-  const referenceSpace = renderer.xr.getReferenceSpace();
-  if (!referenceSpace) return;
-  const pose = frame.getPose(placedAnchor.anchorSpace, referenceSpace);
-  if (!pose) return;
-  const p = pose.transform.position;
-  workspace.position.set(p.x, p.y, p.z);
-  anchorApplied = true;
 }
 
 function animate(_timestamp, frame) {
-  if (frame) {
-    updateHitTest(frame);
-    updatePlacedAnchor(frame);
-  }
+  if (frame) updateHitTest(frame);
   applyCarry();
   updateHud();
   renderer.render(scene, camera);
@@ -1043,6 +1022,8 @@ function main() {
   setupControllers();
   renderer.xr.addEventListener("sessionstart", onSessionStart);
   renderer.xr.addEventListener("sessionend", onSessionEnd);
+  window.addEventListener("pagehide", releaseXR);
+  window.addEventListener("beforeunload", releaseXR);
 
   window.addEventListener("keydown", (event) => {
     const tag = event.target && event.target.tagName;
