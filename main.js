@@ -1,6 +1,6 @@
 // MAC0623 — A4 Mobile AR Docking
 //
-// Hit-test: immersive-web sample (viewer space + local pose, no fallback ray).
+// Hit-test: three.js webxr_ar_hittest (viewer ray + reticle.matrix.decompose).
 // Task: place a workspace on a real table, then dock one 3-color cube into
 // a translucent ghost (x, z, yaw). Opposite faces share a color.
 //   1. touch  — one-finger drag on the plane, two-finger twist
@@ -74,9 +74,6 @@ const _forward = new THREE.Vector3();
 const _local = new THREE.Vector3();
 const _raycaster = new THREE.Raycaster();
 const _workPlane = new THREE.Plane();
-const _reticlePos = new THREE.Vector3();
-const _reticleQuat = new THREE.Quaternion();
-const _reticleScale = new THREE.Vector3();
 
 let scene, camera, renderer;
 let reticle, workspace, ghost, desktopHelpers;
@@ -87,9 +84,6 @@ let selected = null;
 let hitTestSource = null;
 let hitTestSourceRequested = false;
 let hadHit = false;
-let lastHitResult = null;
-let placedAnchor = null;
-let pendingPlace = false;
 
 let technique = "touch";
 let workspacePlaced = false;
@@ -295,32 +289,13 @@ function getViewCamera() {
 }
 
 function updateWorkPlane() {
-  _normal.set(0, 1, 0);
+  _normal.set(0, 1, 0).applyQuaternion(workspace.quaternion);
   _workPlane.setFromNormalAndCoplanarPoint(_normal, workspace.position);
 }
 
 function setPieceOnPlane(piece, worldPoint) {
   workspace.worldToLocal(_local.copy(worldPoint));
   piece.position.set(_local.x, 0, _local.z);
-}
-
-function applyTablePosition(x, y, z) {
-  workspace.position.set(x, y, z);
-  workspace.quaternion.identity();
-  workspace.scale.set(1, 1, 1);
-  workspace.updateMatrixWorld(true);
-  updateWorkPlane();
-}
-
-function clearAnchor() {
-  if (placedAnchor && typeof placedAnchor.delete === "function") {
-    try {
-      placedAnchor.delete();
-    } catch (_err) {
-      // Session may already have dropped the anchor.
-    }
-  }
-  placedAnchor = null;
 }
 
 function layoutTrial() {
@@ -342,33 +317,28 @@ function layoutTrial() {
   applyDockedLook(false);
 }
 
-function placeWorkspaceAt(x, y, z, hitResult) {
-  applyTablePosition(x, y, z);
+function placeWorkspaceFromReticle() {
+  if (!reticle.visible) return;
+  reticle.matrix.decompose(workspace.position, workspace.quaternion, workspace.scale);
+  workspace.scale.set(1, 1, 1);
   workspace.visible = true;
   workspacePlaced = true;
-  pendingPlace = false;
   reticle.visible = false;
-  if (hitResult && typeof hitResult.createAnchor === "function") {
-    hitResult.createAnchor().then((anchor) => {
-      if (!workspacePlaced) {
-        if (anchor && typeof anchor.delete === "function") anchor.delete();
-        return;
-      }
-      placedAnchor = anchor;
-    }).catch((err) => {
-      console.warn("anchor failed", err);
-    });
-  }
+  workspace.updateMatrixWorld(true);
+  updateWorkPlane();
   beginTrial();
 }
 
-function placeWorkspaceFromReticle() {
-  reticle.matrix.decompose(_reticlePos, _reticleQuat, _reticleScale);
-  placeWorkspaceAt(_reticlePos.x, _reticlePos.y, _reticlePos.z, lastHitResult);
-}
-
 function placeWorkspaceDesktop(point) {
-  placeWorkspaceAt(point.x, point.y, point.z, null);
+  workspace.position.copy(point);
+  workspace.quaternion.identity();
+  workspace.scale.set(1, 1, 1);
+  workspace.visible = true;
+  workspacePlaced = true;
+  reticle.visible = false;
+  workspace.updateMatrixWorld(true);
+  updateWorkPlane();
+  beginTrial();
 }
 
 function beginTrial() {
@@ -389,8 +359,6 @@ function relocate() {
   workspace.visible = false;
   workspacePlaced = false;
   trialActive = false;
-  pendingPlace = false;
-  clearAnchor();
   if (reticle) {
     reticle.visible = false;
     reticle.userData.estimated = true;
@@ -477,16 +445,16 @@ function isHudEvent(event) {
 }
 
 function hasRealHit() {
-  return Boolean(reticle && reticle.visible && !reticle.userData.estimated);
+  return Boolean(reticle && reticle.visible);
 }
 
 function tryPlaceWorkspace() {
-  if (workspacePlaced || !isPresenting() || pendingPlace) return;
-  if (!hasRealHit()) {
+  if (workspacePlaced || !isPresenting()) return;
+  if (!reticle.visible) {
     cardStatus.textContent = "Aún no hay superficie. Mueve el teléfono hasta que aparezca el anillo verde.";
     return;
   }
-  pendingPlace = true;
+  placeWorkspaceFromReticle();
 }
 
 function onPointerDown(event) {
@@ -710,7 +678,7 @@ function setTechnique(next) {
 function sessionInit() {
   return {
     requiredFeatures: ["hit-test"],
-    optionalFeatures: ["dom-overlay", "anchors"],
+    optionalFeatures: ["dom-overlay"],
     domOverlay: { root: overlay },
   };
 }
@@ -834,11 +802,6 @@ function onSessionEnd() {
   if (desktopHelpers) desktopHelpers.visible = !isPhone();
   scene.background = isPhone() ? null : new THREE.Color(0x9eb4c4);
   exitARBtn.hidden = true;
-  hitTestSource = null;
-  hitTestSourceRequested = false;
-  lastHitResult = null;
-  pendingPlace = false;
-  clearAnchor();
   restoreOverlay();
   window.setTimeout(restoreOverlay, 0);
   camera.position.set(0.05, 0.85, 0.95);
@@ -846,29 +809,25 @@ function onSessionEnd() {
   updateHud();
 }
 
-function requestHitTestSource(session) {
-  if (hitTestSourceRequested || !session) return;
-  hitTestSourceRequested = true;
-  session.requestReferenceSpace("viewer").then((viewerSpace) => {
-    return session.requestHitTestSource({ space: viewerSpace });
-  }).then((source) => {
-    hitTestSource = source;
-  }).catch((err) => {
-    console.warn("hit-test source failed", err);
-    hitTestSourceRequested = false;
-  });
-}
-
 function updateHitTest(frame) {
-  const session = renderer.xr.getSession();
   const referenceSpace = renderer.xr.getReferenceSpace();
-  if (!session) return;
-
-  requestHitTestSource(session);
-
-  if (!referenceSpace) {
+  const session = renderer.xr.getSession();
+  if (!session || !referenceSpace) {
     if (!workspacePlaced) reticle.visible = false;
     return;
+  }
+
+  if (hitTestSourceRequested === false) {
+    session.requestReferenceSpace("viewer").then((viewerSpace) => {
+      session.requestHitTestSource({ space: viewerSpace }).then((source) => {
+        hitTestSource = source;
+      });
+    });
+    session.addEventListener("end", () => {
+      hitTestSourceRequested = false;
+      hitTestSource = null;
+    });
+    hitTestSourceRequested = true;
   }
 
   const viewerPose = frame.getViewerPose(referenceSpace);
@@ -881,13 +840,6 @@ function updateHitTest(frame) {
 
   if (workspacePlaced) {
     reticle.visible = false;
-    if (placedAnchor) {
-      const anchorPose = frame.getPose(placedAnchor.anchorSpace, referenceSpace);
-      if (anchorPose) {
-        const p = anchorPose.transform.position;
-        applyTablePosition(p.x, p.y, p.z);
-      }
-    }
     return;
   }
 
@@ -896,37 +848,26 @@ function updateHitTest(frame) {
     return;
   }
 
-  const results = frame.getHitTestResults(hitTestSource);
-  const found = results.length > 0;
-  if (hadHit && !found && trialActive) trackingLost += 1;
-  hadHit = found;
+  const hitTestResults = frame.getHitTestResults(hitTestSource);
+  if (hadHit && hitTestResults.length === 0 && trialActive) trackingLost += 1;
+  hadHit = hitTestResults.length > 0;
 
-  if (!found) {
-    lastHitResult = null;
+  if (hitTestResults.length) {
+    const hit = hitTestResults[0];
+    const pose = hit.getPose(referenceSpace);
+    if (!pose) {
+      reticle.visible = false;
+      reticle.userData.estimated = true;
+      return;
+    }
+    reticle.visible = true;
+    reticle.userData.estimated = false;
+    reticle.matrix.fromArray(pose.transform.matrix);
+    reticle.material.color.setHex(0x7cff9a);
+    if (reticle.children[0]) reticle.children[0].material.color.setHex(0x7cff9a);
+  } else {
     reticle.visible = false;
     reticle.userData.estimated = true;
-    if (pendingPlace) placeWorkspaceFromReticle();
-    return;
-  }
-
-  const hitPose = results[0].getPose(referenceSpace);
-  if (!hitPose) {
-    reticle.visible = false;
-    reticle.userData.estimated = true;
-    return;
-  }
-
-  lastHitResult = results[0];
-  reticle.visible = true;
-  reticle.userData.estimated = false;
-  reticle.matrix.fromArray(hitPose.transform.matrix);
-  reticle.matrixWorldNeedsUpdate = true;
-  reticle.material.color.setHex(0x7cff9a);
-  if (reticle.children[0]) reticle.children[0].material.color.setHex(0x7cff9a);
-
-  if (pendingPlace) {
-    const p = hitPose.transform.position;
-    placeWorkspaceAt(p.x, p.y, p.z, results[0]);
   }
 }
 
