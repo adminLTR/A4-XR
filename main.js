@@ -11,6 +11,7 @@
 
 import * as THREE from "three";
 import { ARButton } from "three/addons/webxr/ARButton.js";
+import { XRPlanes } from "three/addons/webxr/XRPlanes.js";
 
 const SIZE = 0.20;
 const POS_TOLERANCE_M = 0.02;
@@ -74,9 +75,11 @@ const _forward = new THREE.Vector3();
 const _local = new THREE.Vector3();
 const _raycaster = new THREE.Raycaster();
 const _workPlane = new THREE.Plane();
+const _one = new THREE.Vector3(1, 1, 1);
+const _reticleQuat = new THREE.Quaternion();
 
 let scene, camera, renderer;
-let reticle, workspace, ghost, desktopHelpers;
+let reticle, workspace, ghost, desktopHelpers, xrPlanes;
 let arSupported = false;
 let objects = [];
 let selected = null;
@@ -324,6 +327,7 @@ function placeWorkspaceFromReticle() {
   workspace.visible = true;
   workspacePlaced = true;
   reticle.visible = false;
+  if (xrPlanes) xrPlanes.visible = false;
   workspace.updateMatrixWorld(true);
   updateWorkPlane();
   beginTrial();
@@ -336,6 +340,7 @@ function placeWorkspaceDesktop(point) {
   workspace.visible = true;
   workspacePlaced = true;
   reticle.visible = false;
+  if (xrPlanes) xrPlanes.visible = false;
   workspace.updateMatrixWorld(true);
   updateWorkPlane();
   beginTrial();
@@ -359,6 +364,7 @@ function relocate() {
   workspace.visible = false;
   workspacePlaced = false;
   trialActive = false;
+  if (xrPlanes) xrPlanes.visible = true;
   if (reticle) {
     reticle.visible = false;
     reticle.userData.estimated = true;
@@ -602,7 +608,7 @@ function updateHud() {
     yawErrorEl.textContent = "—";
     cardStatus.textContent = tracked
       ? "Toca la pantalla o pulsa Colocar cubo aquí"
-      : "Apunta a la mesa y muévelo en círculos lentos. El anillo verde aparece sobre el plano real.";
+      : "Recorre la mesa despacio. Primero aparece un parche verde sobre la superficie; el anillo se pone encima. Luego toca.";
   } else {
     cardTitle.textContent = "Encaja el cubo en el fantasma";
     posErrorEl.textContent = errors.posCm == null ? "—" : `${errors.posCm.toFixed(1)} cm`;
@@ -675,9 +681,9 @@ function setTechnique(next) {
   else updateHud();
 }
 
-function sessionInit() {
+function sessionInit(features = ["hit-test", "plane-detection"]) {
   return {
-    requiredFeatures: ["hit-test"],
+    requiredFeatures: features,
     optionalFeatures: ["dom-overlay"],
     domOverlay: { root: overlay },
   };
@@ -714,7 +720,7 @@ async function diagnoseAR() {
       arSupported = true;
       setGateMessage(
         "Listo para usar la cámara",
-        "Pulsa <b>Entrar en AR</b> o el botón naranja <b>START AR</b> abajo. Luego apunta a una mesa hasta que aparezca el retículo y toca para colocar."
+        "Pulsa <b>Entrar en AR</b> o el botón naranja <b>START AR</b> abajo. Recorre la mesa despacio hasta ver un parche verde y el anillo; entonces toca para colocar."
       );
     } else {
       setGateMessage(
@@ -736,7 +742,12 @@ async function startAR() {
   }
   try {
     renderer.xr.setReferenceSpaceType("local");
-    const session = await navigator.xr.requestSession("immersive-ar", sessionInit());
+    let session;
+    try {
+      session = await navigator.xr.requestSession("immersive-ar", sessionInit());
+    } catch (_err) {
+      session = await navigator.xr.requestSession("immersive-ar", sessionInit(["hit-test"]));
+    }
     await renderer.xr.setSession(session);
   } catch (err) {
     setGateMessage(
@@ -809,6 +820,42 @@ function onSessionEnd() {
   updateHud();
 }
 
+function styleDetectedPlanes() {
+  if (!xrPlanes) return;
+  xrPlanes.traverse((obj) => {
+    if (!obj.isMesh || !obj.material) return;
+    obj.material.transparent = true;
+    obj.material.opacity = 0.28;
+    obj.material.color.setHex(0x7cff9a);
+    obj.material.depthWrite = false;
+    obj.material.side = THREE.DoubleSide;
+  });
+}
+
+function showReticleMatrix(matrix) {
+  reticle.visible = true;
+  reticle.userData.estimated = false;
+  reticle.matrix.copy(matrix);
+  reticle.matrixWorldNeedsUpdate = true;
+  reticle.material.color.setHex(0x7cff9a);
+  if (reticle.children[0]) reticle.children[0].material.color.setHex(0x7cff9a);
+}
+
+function updateReticleFromPlanes() {
+  if (!xrPlanes || !xrPlanes.visible || xrPlanes.children.length === 0) return false;
+  const cam = getViewCamera();
+  cam.getWorldPosition(_camPos);
+  cam.getWorldDirection(_forward);
+  _raycaster.set(_camPos, _forward);
+  const hits = _raycaster.intersectObject(xrPlanes, true);
+  if (!hits.length) return false;
+  const hit = hits[0];
+  hit.object.getWorldQuaternion(_reticleQuat);
+  reticle.matrix.compose(hit.point, _reticleQuat, _one);
+  showReticleMatrix(reticle.matrix);
+  return true;
+}
+
 function updateHitTest(frame) {
   const referenceSpace = renderer.xr.getReferenceSpace();
   const session = renderer.xr.getSession();
@@ -821,7 +868,13 @@ function updateHitTest(frame) {
     session.requestReferenceSpace("viewer").then((viewerSpace) => {
       session.requestHitTestSource({ space: viewerSpace }).then((source) => {
         hitTestSource = source;
+      }).catch((err) => {
+        console.warn("hit-test source failed", err);
+        hitTestSourceRequested = false;
       });
+    }).catch((err) => {
+      console.warn("viewer space failed", err);
+      hitTestSourceRequested = false;
     });
     session.addEventListener("end", () => {
       hitTestSourceRequested = false;
@@ -843,29 +896,25 @@ function updateHitTest(frame) {
     return;
   }
 
-  if (!hitTestSource) {
-    reticle.visible = false;
-    return;
+  let found = false;
+  if (hitTestSource) {
+    const hitTestResults = frame.getHitTestResults(hitTestSource);
+    found = hitTestResults.length > 0;
+    if (found) {
+      const pose = hitTestResults[0].getPose(referenceSpace);
+      if (pose) {
+        reticle.matrix.fromArray(pose.transform.matrix);
+        showReticleMatrix(reticle.matrix);
+      } else {
+        found = false;
+      }
+    }
   }
 
-  const hitTestResults = frame.getHitTestResults(hitTestSource);
-  if (hadHit && hitTestResults.length === 0 && trialActive) trackingLost += 1;
-  hadHit = hitTestResults.length > 0;
+  if (hadHit && !found && trialActive) trackingLost += 1;
+  hadHit = found;
 
-  if (hitTestResults.length) {
-    const hit = hitTestResults[0];
-    const pose = hit.getPose(referenceSpace);
-    if (!pose) {
-      reticle.visible = false;
-      reticle.userData.estimated = true;
-      return;
-    }
-    reticle.visible = true;
-    reticle.userData.estimated = false;
-    reticle.matrix.fromArray(pose.transform.matrix);
-    reticle.material.color.setHex(0x7cff9a);
-    if (reticle.children[0]) reticle.children[0].material.color.setHex(0x7cff9a);
-  } else {
+  if (!found && !updateReticleFromPlanes()) {
     reticle.visible = false;
     reticle.userData.estimated = true;
   }
@@ -913,6 +962,10 @@ function main() {
   document.body.appendChild(renderer.domElement);
 
   document.body.appendChild(ARButton.createButton(renderer, sessionInit()));
+
+  xrPlanes = new XRPlanes(renderer);
+  xrPlanes.addEventListener("planeschanged", styleDetectedPlanes);
+  scene.add(xrPlanes);
 
   buildReticle();
   buildWorkspace();
