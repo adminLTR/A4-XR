@@ -12,11 +12,11 @@
 import * as THREE from "three";
 import { ARButton } from "three/addons/webxr/ARButton.js";
 
-const SIZE = 0.10;
+const SIZE = 0.20;
 const POS_TOLERANCE_M = 0.02;
 const YAW_TOLERANCE_DEG = 10;
-const OBJECT_DISTANCE_MIN = 0.30;
-const OBJECT_DISTANCE_MAX = 0.50;
+const OBJECT_DISTANCE_MIN = 0.28;
+const OBJECT_DISTANCE_MAX = 0.40;
 const CARRY_ROT_STEP = THREE.MathUtils.degToRad(8);
 
 // BoxGeometry materials: +X, -X, +Y, -Y, +Z, -Z. Opposite faces share a color.
@@ -87,6 +87,9 @@ let selected = null;
 let hitTestSource = null;
 let hitTestSourceRequested = false;
 let hadHit = false;
+let lastHitResult = null;
+let placedAnchor = null;
+let pendingPlace = false;
 
 let technique = "touch";
 let workspacePlaced = false;
@@ -278,8 +281,21 @@ function buildReticle() {
   reticle.add(inner);
 }
 
+function getViewCamera() {
+  if (renderer.xr.isPresenting) {
+    if (typeof renderer.xr.updateCamera === "function") {
+      renderer.xr.updateCamera(camera);
+    }
+    const xrCam = renderer.xr.getCamera();
+    xrCam.updateMatrixWorld(true);
+    return xrCam;
+  }
+  camera.updateMatrixWorld(true);
+  return camera;
+}
+
 function updateWorkPlane() {
-  _normal.set(0, 1, 0).applyQuaternion(workspace.quaternion);
+  _normal.set(0, 1, 0);
   _workPlane.setFromNormalAndCoplanarPoint(_normal, workspace.position);
 }
 
@@ -288,11 +304,30 @@ function setPieceOnPlane(piece, worldPoint) {
   piece.position.set(_local.x, 0, _local.z);
 }
 
+function applyTablePosition(x, y, z) {
+  workspace.position.set(x, y, z);
+  workspace.quaternion.identity();
+  workspace.scale.set(1, 1, 1);
+  workspace.updateMatrixWorld(true);
+  updateWorkPlane();
+}
+
+function clearAnchor() {
+  if (placedAnchor && typeof placedAnchor.delete === "function") {
+    try {
+      placedAnchor.delete();
+    } catch (_err) {
+      // Session may already have dropped the anchor.
+    }
+  }
+  placedAnchor = null;
+}
+
 function layoutTrial() {
   ghost.position.set(0, 0, 0);
   ghost.rotation.set(0, Math.random() * Math.PI * 2, 0);
 
-  camera.getWorldPosition(_camPos);
+  getViewCamera().getWorldPosition(_camPos);
   workspace.worldToLocal(_local.copy(_camPos));
   _local.y = 0;
   if (_local.lengthSq() < 1e-6) _local.set(0, 0, 1);
@@ -307,26 +342,33 @@ function layoutTrial() {
   applyDockedLook(false);
 }
 
-function placeWorkspaceFromReticle() {
-  reticle.matrix.decompose(_reticlePos, _reticleQuat, _reticleScale);
-  workspace.position.copy(_reticlePos);
-  workspace.quaternion.copy(_reticleQuat);
-  workspace.scale.set(1, 1, 1);
+function placeWorkspaceAt(x, y, z, hitResult) {
+  applyTablePosition(x, y, z);
   workspace.visible = true;
   workspacePlaced = true;
+  pendingPlace = false;
   reticle.visible = false;
-  updateWorkPlane();
+  if (hitResult && typeof hitResult.createAnchor === "function") {
+    hitResult.createAnchor().then((anchor) => {
+      if (!workspacePlaced) {
+        if (anchor && typeof anchor.delete === "function") anchor.delete();
+        return;
+      }
+      placedAnchor = anchor;
+    }).catch((err) => {
+      console.warn("anchor failed", err);
+    });
+  }
   beginTrial();
 }
 
+function placeWorkspaceFromReticle() {
+  reticle.matrix.decompose(_reticlePos, _reticleQuat, _reticleScale);
+  placeWorkspaceAt(_reticlePos.x, _reticlePos.y, _reticlePos.z, lastHitResult);
+}
+
 function placeWorkspaceDesktop(point) {
-  workspace.position.copy(point);
-  workspace.quaternion.identity();
-  workspace.visible = true;
-  workspacePlaced = true;
-  reticle.visible = false;
-  updateWorkPlane();
-  beginTrial();
+  placeWorkspaceAt(point.x, point.y, point.z, null);
 }
 
 function beginTrial() {
@@ -347,6 +389,8 @@ function relocate() {
   workspace.visible = false;
   workspacePlaced = false;
   trialActive = false;
+  pendingPlace = false;
+  clearAnchor();
   if (reticle) {
     reticle.visible = false;
     reticle.userData.estimated = true;
@@ -400,7 +444,7 @@ function activeCamera() {
 }
 
 function pickPiece(event) {
-  _raycaster.setFromCamera(pointerToNDC(event), camera);
+  _raycaster.setFromCamera(pointerToNDC(event), getViewCamera());
   const hits = _raycaster.intersectObjects(objects, true);
   for (const hit of hits) {
     let node = hit.object;
@@ -412,13 +456,13 @@ function pickPiece(event) {
 
 function intersectWorkPlane(event) {
   updateWorkPlane();
-  _raycaster.setFromCamera(pointerToNDC(event), camera);
+  _raycaster.setFromCamera(pointerToNDC(event), getViewCamera());
   return _raycaster.ray.intersectPlane(_workPlane, _hit) ? _hit : null;
 }
 
 function intersectWorkPlaneCenter() {
   updateWorkPlane();
-  _raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+  _raycaster.setFromCamera(new THREE.Vector2(0, 0), getViewCamera());
   return _raycaster.ray.intersectPlane(_workPlane, _hit) ? _hit : null;
 }
 
@@ -437,12 +481,12 @@ function hasRealHit() {
 }
 
 function tryPlaceWorkspace() {
-  if (workspacePlaced || !isPresenting()) return;
+  if (workspacePlaced || !isPresenting() || pendingPlace) return;
   if (!hasRealHit()) {
     cardStatus.textContent = "Aún no hay superficie. Mueve el teléfono hasta que aparezca el anillo verde.";
     return;
   }
-  placeWorkspaceFromReticle();
+  pendingPlace = true;
 }
 
 function onPointerDown(event) {
@@ -666,7 +710,7 @@ function setTechnique(next) {
 function sessionInit() {
   return {
     requiredFeatures: ["hit-test"],
-    optionalFeatures: ["dom-overlay"],
+    optionalFeatures: ["dom-overlay", "anchors"],
     domOverlay: { root: overlay },
   };
 }
@@ -792,6 +836,9 @@ function onSessionEnd() {
   exitARBtn.hidden = true;
   hitTestSource = null;
   hitTestSourceRequested = false;
+  lastHitResult = null;
+  pendingPlace = false;
+  clearAnchor();
   restoreOverlay();
   window.setTimeout(restoreOverlay, 0);
   camera.position.set(0.05, 0.85, 0.95);
@@ -832,8 +879,20 @@ function updateHitTest(frame) {
     hadPose = true;
   }
 
+  if (workspacePlaced) {
+    reticle.visible = false;
+    if (placedAnchor) {
+      const anchorPose = frame.getPose(placedAnchor.anchorSpace, referenceSpace);
+      if (anchorPose) {
+        const p = anchorPose.transform.position;
+        applyTablePosition(p.x, p.y, p.z);
+      }
+    }
+    return;
+  }
+
   if (!hitTestSource) {
-    if (!workspacePlaced) reticle.visible = false;
+    reticle.visible = false;
     return;
   }
 
@@ -842,14 +901,11 @@ function updateHitTest(frame) {
   if (hadHit && !found && trialActive) trackingLost += 1;
   hadHit = found;
 
-  if (workspacePlaced) {
-    reticle.visible = false;
-    return;
-  }
-
   if (!found) {
+    lastHitResult = null;
     reticle.visible = false;
     reticle.userData.estimated = true;
+    if (pendingPlace) placeWorkspaceFromReticle();
     return;
   }
 
@@ -860,12 +916,18 @@ function updateHitTest(frame) {
     return;
   }
 
+  lastHitResult = results[0];
   reticle.visible = true;
   reticle.userData.estimated = false;
   reticle.matrix.fromArray(hitPose.transform.matrix);
   reticle.matrixWorldNeedsUpdate = true;
   reticle.material.color.setHex(0x7cff9a);
   if (reticle.children[0]) reticle.children[0].material.color.setHex(0x7cff9a);
+
+  if (pendingPlace) {
+    const p = hitPose.transform.position;
+    placeWorkspaceAt(p.x, p.y, p.z, results[0]);
+  }
 }
 
 function animate(_timestamp, frame) {
