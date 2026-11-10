@@ -87,6 +87,10 @@ let selected = null;
 let hitTestSource = null;
 let hitTestSourceRequested = false;
 let hadHit = false;
+let hitTestError = "";
+let hitTestMode = "";
+let lastHitCount = 0;
+let planeCount = 0;
 
 let technique = "touch";
 let workspacePlaced = false;
@@ -272,6 +276,8 @@ function buildReticle() {
     })
   );
   reticle.matrixAutoUpdate = false;
+  reticle.frustumCulled = false;
+  reticle.renderOrder = 10;
   reticle.visible = false;
   reticle.userData.estimated = true;
   scene.add(reticle);
@@ -624,9 +630,9 @@ function updateHud() {
     yawErrorEl.textContent = "—";
     cardStatus.textContent = placeable
       ? (estimated
-        ? "Anillo naranja: apunta al centro de la mesa y pulsa Colocar. El cubo se queda fijo ahí."
+        ? `Anillo naranja (sin plano de ARCore). ${scanStatus()}`
         : "Toca la pantalla o pulsa Colocar cubo aquí")
-      : "Mantén la cámara apuntando a la mesa. En unos segundos debe aparecer un anillo.";
+      : scanStatus();
   } else {
     cardTitle.textContent = "Encaja el cubo en el fantasma";
     posErrorEl.textContent = errors.posCm == null ? "—" : `${errors.posCm.toFixed(1)} cm`;
@@ -864,6 +870,12 @@ function restoreOverlay() {
   overlay.style.display = "";
 }
 
+function scanStatus() {
+  const source = hitTestSource ? `hit-test ${hitTestMode || "activo"}` : "hit-test aún no listo";
+  const err = hitTestError ? ` Error: ${hitTestError}.` : "";
+  return `${source}. Impactos: ${lastHitCount}. Planos: ${planeCount}.${err} Mueve el teléfono de lado (no solo gíralo), a 40–80 cm, con buena luz.`;
+}
+
 function onSessionEnd() {
   if (desktopHelpers) desktopHelpers.visible = !isPhone();
   scene.background = isPhone() ? null : new THREE.Color(0x9eb4c4);
@@ -871,6 +883,10 @@ function onSessionEnd() {
   enterARBtn.disabled = !arSupported;
   hitTestSource = null;
   hitTestSourceRequested = false;
+  hitTestError = "";
+  hitTestMode = "";
+  lastHitCount = 0;
+  planeCount = 0;
   restoreOverlay();
   window.setTimeout(restoreOverlay, 0);
   camera.position.set(0.05, 0.85, 0.95);
@@ -883,8 +899,8 @@ function styleDetectedPlanes() {
   xrPlanes.traverse((obj) => {
     if (!obj.isMesh || !obj.material) return;
     obj.material.transparent = true;
-    obj.material.opacity = 0.28;
-    obj.material.color.setHex(0x7cff9a);
+    obj.material.opacity = 0.45;
+    obj.material.color.setHex(0x39ff7a);
     obj.material.depthWrite = false;
     obj.material.side = THREE.DoubleSide;
   });
@@ -940,22 +956,29 @@ function updateHitTest(frame) {
   }
 
   if (hitTestSourceRequested === false) {
+    hitTestSourceRequested = true;
     session.requestReferenceSpace("viewer").then((viewerSpace) => {
-      session.requestHitTestSource({ space: viewerSpace }).then((source) => {
-        hitTestSource = source;
-      }).catch((err) => {
-        console.warn("hit-test source failed", err);
-        hitTestSourceRequested = false;
-      });
+      const withPoints = { space: viewerSpace, entityTypes: ["plane", "point"] };
+      return session.requestHitTestSource(withPoints).then((source) => {
+        hitTestMode = "plano+punto";
+        return source;
+      }).catch(() => session.requestHitTestSource({ space: viewerSpace }).then((source) => {
+        hitTestMode = "solo plano";
+        return source;
+      }));
+    }).then((source) => {
+      hitTestSource = source;
+      hitTestError = "";
     }).catch((err) => {
-      console.warn("viewer space failed", err);
+      hitTestError = err && err.message ? err.message : "no se pudo crear el hit-test";
       hitTestSourceRequested = false;
+      console.warn("hit-test source failed", err);
     });
     session.addEventListener("end", () => {
       hitTestSourceRequested = false;
       hitTestSource = null;
-    });
-    hitTestSourceRequested = true;
+      hitTestMode = "";
+    }, { once: true });
   }
 
   const viewerPose = frame.getViewerPose(referenceSpace);
@@ -966,15 +989,19 @@ function updateHitTest(frame) {
     hadPose = true;
   }
 
+  planeCount = frame.detectedPlanes ? frame.detectedPlanes.size : 0;
+
   if (workspacePlaced) {
     reticle.visible = false;
     return;
   }
 
   let found = false;
+  lastHitCount = 0;
   if (hitTestSource) {
     const hitTestResults = frame.getHitTestResults(hitTestSource);
-    found = hitTestResults.length > 0;
+    lastHitCount = hitTestResults.length;
+    found = lastHitCount > 0;
     if (found) {
       const pose = hitTestResults[0].getPose(referenceSpace);
       if (pose) {
