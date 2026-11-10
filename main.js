@@ -436,7 +436,7 @@ function hasRealHit() {
 
 function tryPlaceWorkspace() {
   if (workspacePlaced || !isPresenting()) return;
-  if (!hasPlaceableReticle()) {
+  if (!hasRealHit()) {
     cardStatus.textContent = "Espera un momento con la cámara activa hasta que aparezca el anillo.";
     return;
   }
