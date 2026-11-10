@@ -263,8 +263,13 @@ function buildWorkspace() {
 
 function buildReticle() {
   reticle = new THREE.Mesh(
-    new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2),
-    new THREE.MeshBasicMaterial({ color: 0x7cff9a, transparent: true, opacity: 0.95 })
+    new THREE.RingGeometry(0.18, 0.26, 32).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({
+      color: 0x7cff9a,
+      transparent: true,
+      opacity: 0.95,
+      depthTest: false,
+    })
   );
   reticle.matrixAutoUpdate = false;
   reticle.visible = false;
@@ -272,8 +277,8 @@ function buildReticle() {
   scene.add(reticle);
 
   const inner = new THREE.Mesh(
-    new THREE.CircleGeometry(0.012, 16).rotateX(-Math.PI / 2),
-    new THREE.MeshBasicMaterial({ color: 0x7cff9a })
+    new THREE.CircleGeometry(0.02, 16).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({ color: 0x7cff9a, depthTest: false })
   );
   reticle.add(inner);
 }
@@ -323,6 +328,9 @@ function layoutTrial() {
 function placeWorkspaceFromReticle() {
   if (!reticle.visible) return;
   reticle.matrix.decompose(workspace.position, workspace.quaternion, workspace.scale);
+  if (reticle.userData.estimated) {
+    workspace.quaternion.identity();
+  }
   workspace.scale.set(1, 1, 1);
   workspace.visible = true;
   workspacePlaced = true;
@@ -451,13 +459,17 @@ function isHudEvent(event) {
 }
 
 function hasRealHit() {
+  return Boolean(reticle && reticle.visible && !reticle.userData.estimated);
+}
+
+function hasPlaceableReticle() {
   return Boolean(reticle && reticle.visible);
 }
 
 function tryPlaceWorkspace() {
   if (workspacePlaced || !isPresenting()) return;
-  if (!reticle.visible) {
-    cardStatus.textContent = "Aún no hay superficie. Mueve el teléfono hasta que aparezca el anillo verde.";
+  if (!hasPlaceableReticle()) {
+    cardStatus.textContent = "Espera un momento con la cámara activa hasta que aparezca el anillo.";
     return;
   }
   placeWorkspaceFromReticle();
@@ -591,24 +603,30 @@ function updateHud() {
   }
 
   const tracked = hasRealHit();
+  const placeable = hasPlaceableReticle();
+  const estimated = placeable && reticle && reticle.userData.estimated;
   if (aimEl) {
-    aimEl.hidden = workspacePlaced || !tracked;
+    aimEl.hidden = workspacePlaced || !placeable;
     aimEl.classList.toggle("tracked", tracked);
   }
   if (placeBtn) {
     placeBtn.hidden = workspacePlaced;
-    placeBtn.disabled = !workspacePlaced && !tracked;
+    placeBtn.disabled = !workspacePlaced && !placeable;
   }
 
   if (!workspacePlaced) {
     cardTitle.textContent = tracked
       ? "Superficie detectada"
-      : hitTestSource ? "Buscando superficie" : "Iniciando detección";
+      : estimated
+        ? "Lista para colocar (estimado)"
+        : hitTestSource ? "Buscando superficie" : "Iniciando detección";
     posErrorEl.textContent = "—";
     yawErrorEl.textContent = "—";
-    cardStatus.textContent = tracked
-      ? "Toca la pantalla o pulsa Colocar cubo aquí"
-      : "Recorre la mesa despacio. Primero aparece un parche verde sobre la superficie; el anillo se pone encima. Luego toca.";
+    cardStatus.textContent = placeable
+      ? (estimated
+        ? "Anillo naranja: apunta al centro de la mesa y pulsa Colocar. El cubo se queda fijo ahí."
+        : "Toca la pantalla o pulsa Colocar cubo aquí")
+      : "Mantén la cámara apuntando a la mesa. En unos segundos debe aparecer un anillo.";
   } else {
     cardTitle.textContent = "Encaja el cubo en el fantasma";
     posErrorEl.textContent = errors.posCm == null ? "—" : `${errors.posCm.toFixed(1)} cm`;
@@ -681,10 +699,10 @@ function setTechnique(next) {
   else updateHud();
 }
 
-function sessionInit(features = ["hit-test", "plane-detection"]) {
+function sessionInit() {
   return {
-    requiredFeatures: features,
-    optionalFeatures: ["dom-overlay"],
+    requiredFeatures: ["hit-test"],
+    optionalFeatures: ["dom-overlay", "plane-detection"],
     domOverlay: { root: overlay },
   };
 }
@@ -741,19 +759,21 @@ async function startAR() {
     return;
   }
   try {
-    renderer.xr.setReferenceSpaceType("local");
-    let session;
-    try {
-      session = await navigator.xr.requestSession("immersive-ar", sessionInit());
-    } catch (_err) {
-      session = await navigator.xr.requestSession("immersive-ar", sessionInit(["hit-test"]));
-    }
+    renderer.xr.setReferenceSpaceType("local-floor");
+    const session = await navigator.xr.requestSession("immersive-ar", sessionInit());
     await renderer.xr.setSession(session);
-  } catch (err) {
-    setGateMessage(
-      "No se pudo iniciar AR",
-      `El navegador rechazó la sesión: <b>${err.message}</b>.`
-    );
+  } catch (firstErr) {
+    try {
+      renderer.xr.setReferenceSpaceType("local");
+      const session = await navigator.xr.requestSession("immersive-ar", sessionInit());
+      await renderer.xr.setSession(session);
+    } catch (err) {
+      setGateMessage(
+        "No se pudo iniciar AR",
+        `El navegador rechazó la sesión: <b>${err.message}</b>.`
+      );
+      console.warn("AR session failed", firstErr, err);
+    }
   }
 }
 
@@ -832,13 +852,30 @@ function styleDetectedPlanes() {
   });
 }
 
-function showReticleMatrix(matrix) {
+function showReticleMatrix(matrix, estimated = false) {
   reticle.visible = true;
-  reticle.userData.estimated = false;
+  reticle.userData.estimated = estimated;
   reticle.matrix.copy(matrix);
   reticle.matrixWorldNeedsUpdate = true;
-  reticle.material.color.setHex(0x7cff9a);
-  if (reticle.children[0]) reticle.children[0].material.color.setHex(0x7cff9a);
+  const color = estimated ? 0xffcc33 : 0x7cff9a;
+  reticle.material.color.setHex(color);
+  if (reticle.children[0]) reticle.children[0].material.color.setHex(color);
+}
+
+function applyFallbackReticle() {
+  const cam = getViewCamera();
+  cam.getWorldPosition(_camPos);
+  cam.getWorldDirection(_forward);
+  const tableY = _camPos.y - 0.55;
+  const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -tableY);
+  _raycaster.set(_camPos, _forward);
+  if (!_raycaster.ray.intersectPlane(plane, _hit)) {
+    _hit.copy(_camPos).addScaledVector(_forward, 0.5);
+    _hit.y = tableY;
+  }
+  _reticleQuat.identity();
+  reticle.matrix.compose(_hit, _reticleQuat, _one);
+  showReticleMatrix(reticle.matrix, true);
 }
 
 function updateReticleFromPlanes() {
@@ -852,7 +889,7 @@ function updateReticleFromPlanes() {
   const hit = hits[0];
   hit.object.getWorldQuaternion(_reticleQuat);
   reticle.matrix.compose(hit.point, _reticleQuat, _one);
-  showReticleMatrix(reticle.matrix);
+  showReticleMatrix(reticle.matrix, false);
   return true;
 }
 
@@ -904,7 +941,7 @@ function updateHitTest(frame) {
       const pose = hitTestResults[0].getPose(referenceSpace);
       if (pose) {
         reticle.matrix.fromArray(pose.transform.matrix);
-        showReticleMatrix(reticle.matrix);
+        showReticleMatrix(reticle.matrix, false);
       } else {
         found = false;
       }
@@ -915,8 +952,12 @@ function updateHitTest(frame) {
   hadHit = found;
 
   if (!found && !updateReticleFromPlanes()) {
-    reticle.visible = false;
-    reticle.userData.estimated = true;
+    if (viewerPose) {
+      applyFallbackReticle();
+    } else {
+      reticle.visible = false;
+      reticle.userData.estimated = true;
+    }
   }
 }
 
@@ -958,7 +999,7 @@ function main() {
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setClearColor(0x000000, isPhone() ? 0 : 1);
   renderer.xr.enabled = true;
-  renderer.xr.setReferenceSpaceType("local");
+  renderer.xr.setReferenceSpaceType("local-floor");
   document.body.appendChild(renderer.domElement);
 
   document.body.appendChild(ARButton.createButton(renderer, sessionInit()));
