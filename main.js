@@ -58,6 +58,11 @@ const yawErrorEl = document.getElementById("yawError");
 const cardStatus = document.getElementById("cardStatus");
 const carryBar = document.getElementById("carryBar");
 const carryBtn = document.getElementById("carryBtn");
+const resultModal = document.getElementById("resultModal");
+const resultTime = document.getElementById("resultTime");
+const resultPos = document.getElementById("resultPos");
+const resultYawLine = document.getElementById("resultYawLine");
+const retryBtn = document.getElementById("retryBtn");
 const rotLeftBtn = document.getElementById("rotLeftBtn");
 const rotRightBtn = document.getElementById("rotRightBtn");
 const overlay = document.getElementById("overlay");
@@ -86,6 +91,9 @@ let hitTestSource = null;
 let hitTestSourceRequested = false;
 let hadHit = false;
 let suppressDragUntil = 0;
+let resultOpen = false;
+let dragGrabX = 0;
+let dragGrabZ = 0;
 
 let technique = "touch";
 let workspacePlaced = false;
@@ -338,6 +346,8 @@ function placeWorkspaceDesktop(point) {
 }
 
 function beginTrial() {
+  resultOpen = false;
+  if (resultModal) resultModal.hidden = true;
   layoutTrial();
   trialActive = true;
   trialStartTime = performance.now();
@@ -355,6 +365,8 @@ function relocate() {
   workspace.visible = false;
   workspacePlaced = false;
   trialActive = false;
+  resultOpen = false;
+  if (resultModal) resultModal.hidden = true;
   if (reticle) reticle.visible = false;
   clearSelection();
   carrying = false;
@@ -434,7 +446,23 @@ function twistAngle() {
 }
 
 function isHudEvent(event) {
-  return Boolean(event.target.closest("#hud, #carryBar, #arGate, #ARButton, #errorCard, button, input, select, label, a"));
+  return Boolean(event.target.closest("#hud, #carryBar, #arGate, #ARButton, #errorCard, #resultModal, button, input, select, label, a"));
+}
+
+function rememberDragGrab(event) {
+  const point = intersectWorkPlane(event);
+  if (!point || !selected) return;
+  workspace.worldToLocal(_local.copy(point));
+  dragGrabX = selected.position.x - _local.x;
+  dragGrabZ = selected.position.z - _local.z;
+}
+
+function moveDraggedPiece(event) {
+  const point = intersectWorkPlane(event);
+  if (!point || !selected) return;
+  workspace.worldToLocal(_local.copy(point));
+  selected.position.set(_local.x + dragGrabX, 0, _local.z + dragGrabZ);
+  markTrialStarted();
 }
 
 function hasRealHit() {
@@ -468,13 +496,12 @@ function onPointerDown(event) {
     return;
   }
 
-  if (pointers.size === 1) {
+  if (pointers.size === 1 && technique === "touch" && selected && !resultOpen) {
     const piece = pickPiece(event);
-    if (piece) {
-      selectPiece(piece);
-      if (technique === "touch") dragging = true;
-    }
-  } else if (pointers.size >= 2 && technique === "touch" && selected) {
+    if (piece) selectPiece(piece);
+    dragging = true;
+    rememberDragGrab(event);
+  } else if (pointers.size >= 2 && technique === "touch" && selected && !resultOpen) {
     dragging = false;
     rotating = true;
     lastTwist = twistAngle();
@@ -495,19 +522,14 @@ function onPointerMove(event) {
     return;
   }
 
-  if (dragging && technique === "touch") {
-    const point = intersectWorkPlane(event);
-    if (point) {
-      setPieceOnPlane(selected, point);
-      markTrialStarted();
-    }
-  }
+  if (dragging && technique === "touch") moveDraggedPiece(event);
 }
 
 function onPointerUp(event) {
   pointers.delete(event.pointerId);
   if (pointers.size < 2) rotating = false;
   if (pointers.size === 0) dragging = false;
+  maybeCompleteTrial();
 }
 
 function applyCarry() {
@@ -612,7 +634,28 @@ function updateHud() {
   }
 
   trialCountEl.textContent = `Intento ${trialIndexByTechnique[technique] + 1}`;
-  carryBar.hidden = technique !== "carry";
+  carryBar.hidden = technique !== "carry" || resultOpen;
+  maybeCompleteTrial();
+}
+
+function showResult(row) {
+  resultOpen = true;
+  dragging = false;
+  rotating = false;
+  carrying = false;
+  carryBtn.classList.remove("held");
+  resultTime.textContent = `${row.completion_time_s} s`;
+  resultPos.textContent = `${row.pos_error_cm} cm`;
+  resultYawLine.textContent = `Rotación: ${row.yaw_error_deg}°`;
+  resultModal.hidden = false;
+  carryBar.hidden = true;
+}
+
+function maybeCompleteTrial() {
+  if (!trialActive || !workspacePlaced || resultOpen) return;
+  if (dragging || rotating || carrying || pointers.size > 0) return;
+  if (!measureErrors().docked) return;
+  finishTrial();
 }
 
 function finishTrial() {
@@ -634,10 +677,8 @@ function finishTrial() {
   rows.push(row);
   trialIndexByTechnique[technique] += 1;
   trialActive = false;
-  cardStatus.textContent = `Intento ${row.trial} guardado — colocando el siguiente`;
-  window.setTimeout(() => {
-    if (workspacePlaced) beginTrial();
-  }, 350);
+  cardStatus.textContent = `Intento ${row.trial} guardado`;
+  showResult(row);
 }
 
 function buildCsv() {
@@ -978,6 +1019,11 @@ function main() {
   replaceBtn.addEventListener("click", relocate);
   enterARBtn.addEventListener("click", startAR);
   exitARBtn.addEventListener("click", endAR);
+  retryBtn.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (workspacePlaced) beginTrial();
+  });
   placeBtn.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();

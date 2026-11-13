@@ -53,6 +53,25 @@
       <button id="placeBtn" type="button">Colocar cubo aquí</button>
     </div>
 
+    <div id="resultModal" hidden>
+      <div class="modal-card">
+        <div class="card-kicker">Intento completado</div>
+        <div class="card-title">Cubo encajado</div>
+        <div class="card-metrics">
+          <div>
+            <span class="metric-label">Tiempo</span>
+            <span class="metric-value" id="resultTime">—</span>
+          </div>
+          <div>
+            <span class="metric-label">Error de posición</span>
+            <span class="metric-value" id="resultPos">—</span>
+          </div>
+        </div>
+        <div class="card-status" id="resultYawLine">Rotación: —</div>
+        <button id="retryBtn" type="button">Otro intento</button>
+      </div>
+    </div>
+
     <div id="carryBar" hidden>
       <button id="rotLeftBtn" type="button" aria-label="Rotar izquierda">↺</button>
       <button id="carryBtn" type="button">Mantén para llevar</button>
