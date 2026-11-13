@@ -80,6 +80,8 @@ const _workPlane = new THREE.Plane();
 const _hitQuat = new THREE.Quaternion();
 const _hitScale = new THREE.Vector3();
 const _hitEuler = new THREE.Euler();
+const _right = new THREE.Vector3();
+const _ahead = new THREE.Vector3();
 
 let scene, camera, renderer;
 let reticle, workspace, ghost, desktopHelpers;
@@ -127,6 +129,10 @@ function shortestYawDeg(a, b) {
   return Math.abs(d);
 }
 
+function colorYawDeg(a, b) {
+  return Math.min(shortestYawDeg(a, b), shortestYawDeg(a, b + Math.PI));
+}
+
 function measureErrors() {
   const match = matchingObject();
   if (!workspacePlaced || !match) return { posCm: null, yawDeg: null, docked: false };
@@ -134,7 +140,7 @@ function measureErrors() {
   const gx = ghost.position.x;
   const gz = ghost.position.z;
   const posCm = Math.hypot(_local.x - gx, _local.z - gz) * 100;
-  const yawDeg = shortestYawDeg(match.rotation.y, ghost.rotation.y);
+  const yawDeg = colorYawDeg(match.rotation.y, ghost.rotation.y);
   return {
     posCm,
     yawDeg,
@@ -439,10 +445,26 @@ function intersectWorkPlaneCenter() {
   return _raycaster.ray.intersectPlane(_workPlane, _hit) ? _hit : null;
 }
 
+function activeFingers() {
+  let count = 0;
+  for (const point of pointers.values()) {
+    if (point.type !== "mouse") count += 1;
+  }
+  return count;
+}
+
 function twistAngle() {
-  const pts = [...pointers.values()];
+  const pts = [];
+  for (const point of pointers.values()) {
+    if (point.type !== "mouse") pts.push(point);
+  }
   if (pts.length < 2) return 0;
   return Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x);
+}
+
+function ignoreCompatMouse(event) {
+  if (event.pointerType !== "mouse") return false;
+  return isPresenting() || activeFingers() > 0;
 }
 
 function isHudEvent(event) {
@@ -459,9 +481,32 @@ function rememberDragGrab(event) {
 
 function moveDraggedPiece(event) {
   const point = intersectWorkPlane(event);
-  if (!point || !selected) return;
+  if (!point || !selected) return false;
   workspace.worldToLocal(_local.copy(point));
   selected.position.set(_local.x + dragGrabX, 0, _local.z + dragGrabZ);
+  markTrialStarted();
+  return true;
+}
+
+function moveByFingerDelta(dx, dy) {
+  if (!selected || (dx === 0 && dy === 0)) return;
+  const cam = getViewCamera();
+  _right.set(1, 0, 0).applyQuaternion(cam.quaternion);
+  _ahead.set(0, 0, -1).applyQuaternion(cam.quaternion);
+  _hitQuat.copy(workspace.quaternion).invert();
+  _right.applyQuaternion(_hitQuat);
+  _ahead.applyQuaternion(_hitQuat);
+  _right.y = 0;
+  _ahead.y = 0;
+  if (_right.lengthSq() > 1e-8) _right.normalize();
+  if (_ahead.lengthSq() > 1e-8) _ahead.normalize();
+  cam.getWorldPosition(_camPos);
+  selected.getWorldPosition(_hit);
+  const dist = Math.max(0.35, _camPos.distanceTo(_hit));
+  const fov = THREE.MathUtils.degToRad(camera.fov || 60);
+  const meters = (2 * Math.tan(fov / 2) * dist) / window.innerHeight;
+  selected.position.x += (_right.x * dx - _ahead.x * dy) * meters;
+  selected.position.z += (_right.z * dx - _ahead.z * dy) * meters;
   markTrialStarted();
 }
 
@@ -479,9 +524,9 @@ function tryPlaceWorkspace() {
 }
 
 function onPointerDown(event) {
-  if (isHudEvent(event)) return;
+  if (ignoreCompatMouse(event) || isHudEvent(event)) return;
   lastPointerAt = performance.now();
-  pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  pointers.set(event.pointerId, { x: event.clientX, y: event.clientY, type: event.pointerType });
   if (performance.now() < suppressDragUntil) return;
   if (trialActive) touchCount += 1;
 
@@ -496,12 +541,13 @@ function onPointerDown(event) {
     return;
   }
 
-  if (pointers.size === 1 && technique === "touch" && selected && !resultOpen) {
-    const piece = pickPiece(event);
-    if (piece) selectPiece(piece);
+  if (technique !== "touch" || !selected || resultOpen) return;
+  const fingers = activeFingers();
+  if (fingers <= 1) {
+    rotating = false;
     dragging = true;
     rememberDragGrab(event);
-  } else if (pointers.size >= 2 && technique === "touch" && selected && !resultOpen) {
+  } else {
     dragging = false;
     rotating = true;
     lastTwist = twistAngle();
@@ -509,12 +555,22 @@ function onPointerDown(event) {
 }
 
 function onPointerMove(event) {
-  if (!pointers.has(event.pointerId)) return;
-  pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  if (ignoreCompatMouse(event)) return;
+  const prev = pointers.get(event.pointerId);
+  if (!prev) return;
+  const dx = event.clientX - prev.x;
+  const dy = event.clientY - prev.y;
+  pointers.set(event.pointerId, { x: event.clientX, y: event.clientY, type: event.pointerType || prev.type });
   if (performance.now() < suppressDragUntil) return;
-  if (!workspacePlaced || !selected) return;
+  if (!workspacePlaced || !selected || technique !== "touch" || resultOpen) return;
 
-  if (rotating && pointers.size >= 2 && technique === "touch") {
+  if (activeFingers() >= 2) {
+    dragging = false;
+    if (!rotating) {
+      rotating = true;
+      lastTwist = twistAngle();
+      return;
+    }
     const angle = twistAngle();
     selected.rotation.y += angle - lastTwist;
     lastTwist = angle;
@@ -522,13 +578,18 @@ function onPointerMove(event) {
     return;
   }
 
-  if (dragging && technique === "touch") moveDraggedPiece(event);
+  rotating = false;
+  if (!dragging) return;
+  if (!moveDraggedPiece(event)) moveByFingerDelta(dx, dy);
 }
 
 function onPointerUp(event) {
   pointers.delete(event.pointerId);
-  if (pointers.size < 2) rotating = false;
-  if (pointers.size === 0) dragging = false;
+  if (activeFingers() < 2) rotating = false;
+  if (activeFingers() === 0) dragging = false;
+  else if (activeFingers() === 1 && technique === "touch" && selected && !resultOpen) {
+    dragging = true;
+  }
   maybeCompleteTrial();
 }
 
@@ -626,8 +687,8 @@ function updateHud() {
       cardStatus.textContent = "Encajado — pulsa Finalizar intento";
     } else if (selected) {
       cardStatus.textContent = technique === "carry"
-        ? "Mantén Llevar y mueve el teléfono; ↺ ↻ rotan. Alinea colores y la flecha blanca."
-        : "Arrastra con un dedo; gira con dos. Alinea colores y la flecha blanca.";
+        ? "Mantén Llevar y mueve el teléfono; ↺ ↻ rotan. Alinea los colores."
+        : "Un dedo mueve el cubo por la mesa. Dos dedos lo giran.";
     } else {
       cardStatus.textContent = "Toca el cubo para seleccionarlo";
     }
