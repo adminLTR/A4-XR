@@ -455,9 +455,10 @@ function activeFingers() {
 
 function twistAngle() {
   const pts = [];
-  for (const point of pointers.values()) {
-    if (point.type !== "mouse") pts.push(point);
+  for (const [id, point] of pointers) {
+    if (point.type !== "mouse") pts.push({ id, x: point.x, y: point.y });
   }
+  pts.sort((a, b) => a.id - b.id);
   if (pts.length < 2) return 0;
   return Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x);
 }
@@ -572,7 +573,9 @@ function onPointerMove(event) {
       return;
     }
     const angle = twistAngle();
-    selected.rotation.y += angle - lastTwist;
+    let delta = angle - lastTwist;
+    delta = Math.atan2(Math.sin(delta), Math.cos(delta));
+    selected.rotation.y += delta;
     lastTwist = angle;
     markTrialStarted();
     return;
@@ -584,12 +587,10 @@ function onPointerMove(event) {
 }
 
 function onPointerUp(event) {
+  const wasRotating = rotating;
   pointers.delete(event.pointerId);
   if (activeFingers() < 2) rotating = false;
-  if (activeFingers() === 0) dragging = false;
-  else if (activeFingers() === 1 && technique === "touch" && selected && !resultOpen) {
-    dragging = true;
-  }
+  if (activeFingers() === 0 || wasRotating) dragging = false;
   maybeCompleteTrial();
 }
 
