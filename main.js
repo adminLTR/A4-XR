@@ -135,11 +135,8 @@ function colorYawDeg(a, b) {
 
 function measureErrors() {
   const match = matchingObject();
-  if (!workspacePlaced || !match) return { posCm: null, yawDeg: null, docked: false };
-  workspace.worldToLocal(_local.copy(match.position));
-  const gx = ghost.position.x;
-  const gz = ghost.position.z;
-  const posCm = Math.hypot(_local.x - gx, _local.z - gz) * 100;
+  if (!workspacePlaced || !match || !ghost) return { posCm: null, yawDeg: null, docked: false };
+  const posCm = Math.hypot(match.position.x - ghost.position.x, match.position.z - ghost.position.z) * 100;
   const yawDeg = colorYawDeg(match.rotation.y, ghost.rotation.y);
   return {
     posCm,
