@@ -575,8 +575,9 @@ function onPointerMove(event) {
     const angle = twistAngle();
     let delta = angle - lastTwist;
     delta = Math.atan2(Math.sin(delta), Math.cos(delta));
-    selected.rotation.y += delta;
     lastTwist = angle;
+    if (Math.abs(delta) > THREE.MathUtils.degToRad(30)) return;
+    selected.rotation.y += delta;
     markTrialStarted();
     return;
   }
