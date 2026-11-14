@@ -1095,8 +1095,47 @@ function main() {
     if (workspacePlaced) beginTrial();
   });
 
-  carryBtn.addEventListener("pointerdown", (event) => {
+  function capturePointer(el, event) {
+    if (event.pointerId == null) return;
+    try {
+      el.setPointerCapture(event.pointerId);
+    } catch (_err) {
+      // Some WebXR DOM overlays reject capture; holding still works.
+    }
+  }
+
+  function blockBrowserHold(event) {
     event.preventDefault();
+    event.stopPropagation();
+  }
+
+  let carryPointerId = null;
+  let rotPointerId = null;
+
+  const releaseCarry = () => {
+    carryPointerId = null;
+    carrying = false;
+    carryBtn.classList.remove("held");
+  };
+
+  function onCarryEnd(event) {
+    if (carryPointerId == null) return;
+    if (event.pointerId != null && event.pointerId !== carryPointerId) return;
+    releaseCarry();
+  }
+
+  function onRotEnd(event) {
+    if (rotPointerId == null) return;
+    if (event.pointerId != null && event.pointerId !== rotPointerId) return;
+    rotPointerId = null;
+    stopRotHold();
+  }
+
+  carryBtn.addEventListener("pointerdown", (event) => {
+    if (event.button) return;
+    blockBrowserHold(event);
+    capturePointer(carryBtn, event);
+    carryPointerId = event.pointerId;
     if (!selected) {
       cardStatus.textContent = "Primero toca el cubo para seleccionarlo";
       return;
@@ -1104,25 +1143,46 @@ function main() {
     carrying = true;
     carryBtn.classList.add("held");
   });
-  const releaseCarry = () => {
-    carrying = false;
-    carryBtn.classList.remove("held");
-  };
-  carryBtn.addEventListener("pointerup", releaseCarry);
-  carryBtn.addEventListener("pointerleave", releaseCarry);
-  carryBtn.addEventListener("pointercancel", releaseCarry);
 
   rotLeftBtn.addEventListener("pointerdown", (event) => {
-    event.preventDefault();
+    if (event.button) return;
+    blockBrowserHold(event);
+    capturePointer(rotLeftBtn, event);
+    rotPointerId = event.pointerId;
     startRotHold(1);
   });
   rotRightBtn.addEventListener("pointerdown", (event) => {
-    event.preventDefault();
+    if (event.button) return;
+    blockBrowserHold(event);
+    capturePointer(rotRightBtn, event);
+    rotPointerId = event.pointerId;
     startRotHold(-1);
   });
-  ["pointerup", "pointerleave", "pointercancel"].forEach((name) => {
-    rotLeftBtn.addEventListener(name, stopRotHold);
-    rotRightBtn.addEventListener(name, stopRotHold);
+
+  window.addEventListener("pointerup", (event) => {
+    onCarryEnd(event);
+    onRotEnd(event);
+  });
+  window.addEventListener("pointercancel", (event) => {
+    onCarryEnd(event);
+    onRotEnd(event);
+  });
+
+  [carryBar, carryBtn, rotLeftBtn, rotRightBtn].forEach((el) => {
+    el.addEventListener("contextmenu", blockBrowserHold);
+    el.addEventListener("selectstart", blockBrowserHold);
+    el.addEventListener("dragstart", blockBrowserHold);
+  });
+
+  document.addEventListener("selectstart", (event) => {
+    if (carrying || rotHoldDir || event.target.closest("#carryBar")) {
+      event.preventDefault();
+    }
+  });
+  document.addEventListener("selectionchange", () => {
+    if (!(carrying || rotHoldDir)) return;
+    const selection = window.getSelection();
+    if (selection && selection.rangeCount) selection.removeAllRanges();
   });
 
   setupControllers();
